@@ -18,7 +18,7 @@ The web promised to fix this. PWAs are almost the answer — but a PWA hosted at
 
 There is no platform today where a developer can build something, ship it once, have it work forever on any device, charge a fair one-time price, and walk away without ongoing liability.
 
-That platform should exist. ForeverApps is the attempt to build it.
+That platform should exist. The `.feapp` format is the attempt to build it.
 
 ---
 
@@ -56,11 +56,11 @@ Electron is the closest existing technology to this vision, and the Electron tea
 
 The result: every Electron app is 100MB+, every app ships its own browser, and every app is independently distributed. The architecture is `OS → [app + Chrome] × N`.
 
-ForeverApps inverts this. One runner. One webview. Many `.feapp` files. The architecture is `OS → [ForeverApps runner] → [many .feapp apps]`.
+`.feapp` inverts this. One runner. One webview. Many `.feapp` files. The architecture is `OS → [runner] → [many .feapp apps]`.
 
-This is how executables relate to an operating system. The OS provides the runtime. The application is just code. ForeverApps provides the runtime. The `.feapp` file is just code.
+This is how executables relate to an operating system. The OS provides the runtime. The application is just code. The runner provides the runtime. The `.feapp` file is just code.
 
-Electron also cannot run on mobile — an Electron app cannot be opened on a phone without a native port. A `.feapp` file runs on mobile through the cloud library, which serves the same file through a browser interface. No recompilation. No separate build. The same artifact.
+Electron also cannot run on mobile — an Electron app cannot be opened on a phone without a native port. A `.feapp` file runs on mobile through a cloud library, which serves the same file through a browser interface. No recompilation. No separate build. The same artifact.
 
 ---
 
@@ -70,7 +70,7 @@ The App Store is a distribution monopoly with a toll. $99/year to be allowed to 
 
 This is the mechanism that makes niche apps economically impossible. A developer who wants to build something useful for a small community, charge a fair one-time price, and move on — cannot do this through the App Store. The ongoing costs require ongoing revenue. Ongoing revenue requires subscriptions. Subscriptions require a large enough user base to sustain them.
 
-ForeverApps does not require permission from a platform to distribute. A `.feapp` file can be shared, sold, hosted, archived, copied, and passed between people like any other file. Distribution is not a gatekeeping problem.
+`.feapp` does not require permission from a platform to distribute. A `.feapp` file can be shared, sold, hosted, archived, copied, and passed between people like any other file. Distribution is not a gatekeeping problem.
 
 ---
 
@@ -78,19 +78,19 @@ ForeverApps does not require permission from a platform to distribute. A `.feapp
 
 Steam did not invent the Windows executable. The `.exe` existed and worked before Steam. Steam organized discovery, purchase, and updates on top of an artifact format that was already complete.
 
-This is the exact sequence ForeverApps follows:
+This is the exact sequence `.feapp` follows:
 
 1. The `.feapp` format is the executable. Self-contained, portable, complete.
 2. The runner is the operating system layer that opens `.feapp` files.
 3. The library is Steam — discovery, management, updates — built on top of a format that works without it.
 
-The format does not depend on the library. A `.feapp` file works without ForeverApps existing at all — the runner is open source, the format is an open spec, and anyone can build a runner. This is the durability guarantee: piratability, copyability, and openness are not risks to manage. They are the mechanism of survival.
+The format does not depend on the library. A `.feapp` file works without any single ecosystem existing at all — the format is an open spec, and anyone can build a runner. This is the durability guarantee: piratability, copyability, and openness are not risks to manage. They are the mechanism of survival.
 
 ---
 
 ## What "Forever" Means
 
-**Your data is forever yours.** All data is stored on the user's device. Always exportable to open formats. No account required to access what you created. If ForeverApps disappeared tomorrow, your data would still be usable.
+**Your data is forever yours.** All data is stored on the user's device. Always exportable to open formats. No account required to access what you created. If every ecosystem disappeared tomorrow, your data would still be usable.
 
 **Your purchase is forever yours.** No subscription expiration. No server shutdown that kills the app. No forced upgrades. The version you bought works until the hardware it runs on stops working.
 
@@ -102,7 +102,7 @@ The format does not depend on the library. A `.feapp` file works without Forever
 
 ## What Came Before
 
-ForeverApps did not invent these ideas. It assembles them:
+`.feapp` did not invent these ideas. It assembles them:
 
 - **Unhosted / remoteStorage** (2011) — got the architecture right, never built the apps
 - **Local-First Software — Ink & Switch** (2019) — articulated the philosophy precisely
@@ -111,7 +111,7 @@ ForeverApps did not invent these ideas. It assembles them:
 - **Electron / Tauri** — got the native shell for web apps right, without opinions about data ownership
 - **PWA movement** — got cross-platform distribution right, didn't solve hosting dependency
 
-The specific combination — shared runner, self-contained artifact, remoteStorage as the sole communication contract, manifest as time capsule, piratability as durability — does not exist. That combination is what ForeverApps is.
+The specific combination — shared runner, self-contained artifact, local-first actor model, manifest as time capsule, piratability as durability — does not exist elsewhere. That combination is what `.feapp` is.
 
 ---
 
