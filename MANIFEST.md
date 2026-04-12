@@ -1,20 +1,20 @@
 # Manifest Specification
 
-The `.feapp` manifest is the most important artifact in the ForeverApps ecosystem. It is not just a technical configuration file — it is a **trust declaration**, a **time capsule**, and a **contract** between the developer, the user, and any future runner that needs to execute the app.
+The manifest is the most important artifact in a `.feapp` file. It is a trust declaration, a time capsule, and a contract between the developer, the user, and any future runner.
 
-Every field exists for a reason. Every field that isn't declared doesn't happen.
+Every field exists for a reason. Every field that is not declared does not happen.
 
 ---
 
 ## Format
 
-The manifest is a JSON file named `feapp.json`, located at the root of the `.feapp` package.
+A JSON file named `feapp.json` at the root of the `.feapp` archive.
 
 ---
 
 ## Example Manifests
 
-### Tier 1 — HTML5 Game (frontend only)
+### Minimal — frontend only
 
 ```json
 {
@@ -23,15 +23,7 @@ The manifest is a JSON file named `feapp.json`, located at the root of the `.fea
   "name": "My Game",
   "version": "1.0.0",
   "author": {
-    "name": "Developer Name",
-    "signing_key": "sha256:abc123..."
-  },
-  "runtime": {
-    "web": {
-      "min_chrome": 110,
-      "min_firefox": 109,
-      "min_safari": 16
-    }
+    "name": "Developer Name"
   },
   "frontend": {
     "entry": "index.html",
@@ -39,60 +31,17 @@ The manifest is a JSON file named `feapp.json`, located at the root of the `.fea
       "allowed": []
     }
   },
+  "storage": {
+    "paths": ["/mygame/"]
+  },
   "data": {
-    "storage": "indexeddb",
     "export_format": "json",
     "schema_version": 1
-  },
-  "distribution": {
-    "update_feed": "https://developer.com/mygame/releases.json",
-    "license": "one-time"
   }
 }
 ```
 
-### Tier 1 — Productivity PWA (frontend only, with network access)
-
-```json
-{
-  "feapp": "0.1",
-  "id": "com.developer.myjournal",
-  "name": "My Journal",
-  "version": "1.0.0",
-  "author": {
-    "name": "Developer Name",
-    "signing_key": "sha256:abc123..."
-  },
-  "runtime": {
-    "web": {
-      "min_chrome": 110,
-      "min_firefox": 109,
-      "min_safari": 16
-    }
-  },
-  "frontend": {
-    "entry": "index.html",
-    "network": {
-      "allowed": []
-    }
-  },
-  "data": {
-    "storage": "indexeddb",
-    "export_format": "json",
-    "schema_version": 1,
-    "remotestorage": {
-      "module": "journal",
-      "paths": ["/journal/entries/", "/journal/settings/"]
-    }
-  },
-  "distribution": {
-    "update_feed": "https://developer.com/myjournal/releases.json",
-    "license": "one-time"
-  }
-}
-```
-
-### Tier 2 — App with Deno Background Worker
+### With stateful and stateless workers
 
 ```json
 {
@@ -101,19 +50,58 @@ The manifest is a JSON file named `feapp.json`, located at the root of the `.fea
   "name": "Feed Reader",
   "version": "1.0.0",
   "author": {
-    "name": "Developer Name",
-    "signing_key": "sha256:abc123..."
+    "name": "Developer Name"
   },
-  "runtime": {
-    "web": {
-      "min_chrome": 110,
-      "min_firefox": 109,
-      "min_safari": 16
-    },
-    "worker": {
-      "runtime": "deno",
-      "min_version": "1.40"
+  "frontend": {
+    "entry": "index.html",
+    "required_apis": ["indexeddb", "web-crypto", "service-workers"],
+    "network": {
+      "allowed": [],
+      "localhost": [11434]
     }
+  },
+  "workers": {
+    "stateful": {
+      "entry": "workers/stateful.js",
+      "tc55": "2025",
+      "permissions": {
+        "network": ["*.rss.com"],
+        "storage": "readwrite"
+      }
+    },
+    "stateless": {
+      "entry": "workers/stateless.js",
+      "tc55": "2025",
+      "permissions": {
+        "network": ["api.openai.com"],
+        "storage": "readonly"
+      }
+    }
+  },
+  "storage": {
+    "paths": ["/feedreader/"]
+  },
+  "data": {
+    "export_format": "json",
+    "schema_version": 1
+  },
+  "distribution": {
+    "update_feed": "https://developer.com/feedreader/releases.json",
+    "license": "one-time"
+  }
+}
+```
+
+### With filesystem access
+
+```json
+{
+  "feapp": "0.1",
+  "id": "com.developer.videolibrary",
+  "name": "Video Library",
+  "version": "1.0.0",
+  "author": {
+    "name": "Developer Name"
   },
   "frontend": {
     "entry": "index.html",
@@ -121,45 +109,23 @@ The manifest is a JSON file named `feapp.json`, located at the root of the `.fea
       "allowed": []
     }
   },
-  "worker": {
-    "entry": "worker/main.ts",
-    "permissions": {
-      "network": {
-        "allowed": ["feeds.example.com", "*.rss.com"]
-      },
-      "filesystem": {
-        "allowed": []
+  "workers": {
+    "stateful": {
+      "entry": "workers/stateful.js",
+      "tc55": "2025",
+      "permissions": {
+        "network": [],
+        "storage": "readwrite",
+        "filesystem": ["/videos", "/thumbnails"]
       }
-    },
-    "communication": {
-      "direct": true,
-      "remotestorage": true
-    },
-    "lifecycle": {
-      "start": "on_app_open",
-      "stop": "on_app_close"
     }
+  },
+  "storage": {
+    "paths": ["/videolibrary/"]
   },
   "data": {
-    "storage": "indexeddb",
     "export_format": "json",
-    "schema_version": 1,
-    "remotestorage": {
-      "module": "feedreader",
-      "paths": ["/feedreader/feeds/", "/feedreader/articles/", "/feedreader/settings/"]
-    }
-  },
-  "optional_dependencies": {
-    "ollama": {
-      "endpoint": "http://localhost:11434",
-      "required": false,
-      "purpose": "Article summarization",
-      "models": ["llama3.2"]
-    }
-  },
-  "distribution": {
-    "update_feed": "https://developer.com/feedreader/releases.json",
-    "license": "one-time"
+    "schema_version": 1
   }
 }
 ```
@@ -169,199 +135,205 @@ The manifest is a JSON file named `feapp.json`, located at the root of the `.fea
 ## Field Reference
 
 ### `feapp`
+
 **Type:** string  
 **Required:** yes
 
-The spec version this manifest targets. Used by runners to determine compatibility. A runner that does not support this spec version must refuse to open the file and tell the user clearly why.
+The spec version this manifest targets. A runner that does not support this exact version must refuse to open the file and tell the user clearly. No best-effort mode. No compatibility assumptions.
 
 ---
 
 ### `id`
+
 **Type:** string  
 **Required:** yes  
 **Format:** reverse domain notation (`com.developer.appname`)
 
-A globally unique identifier for this app. Used by the runner and library to distinguish apps from each other, manage data namespacing, and prevent conflicts.
+Globally unique identifier for this app. Stable across versions — changing the ID creates a new app as far as any runner or library is concerned.
 
 ---
 
 ### `name`
+
 **Type:** string  
 **Required:** yes
 
-The human-readable display name of the app.
+Human-readable display name. Used in runner UI, library UI, and available to the frontend via `feapp.app.name`.
 
 ---
 
 ### `version`
+
 **Type:** string  
 **Required:** yes  
 **Format:** semantic versioning (`major.minor.patch`)
 
-The version of this specific `.feapp` file. The library uses this to compare against the update feed.
+The version of this `.feapp` file. Used by libraries to compare against update feeds and to enforce exact version matching across components.
 
 ---
 
 ### `author`
+
 **Type:** object  
 **Required:** yes
 
 ```json
 {
-  "name": "Human-readable author name",
-  "signing_key": "sha256:fingerprint of the developer's public key"
+  "name": "Human-readable author name"
 }
 ```
 
-The signing key fingerprint links this manifest to the author's key registered with a signing authority. See `SIGNING.md` for the full trust model.
+`name` is displayed to the user by the runner and library before the app is run.
 
----
-
-### `runtime`
-
-Declares what runtime versions the app was built for and verified against. This is the **time capsule field** — a runner built in the future uses this to know what environment to emulate.
-
-#### `runtime.web`
-**Required:** yes
-
-```json
-{
-  "min_chrome": 110,
-  "min_firefox": 109,
-  "min_safari": 16
-}
-```
-
-Minimum browser engine versions the app is known to work with. The runner warns the user if the system webview is older than declared.
-
-#### `runtime.worker`
-**Required:** only for Tier 2 apps
-
-```json
-{
-  "runtime": "deno",
-  "min_version": "1.40"
-}
-```
-
-Supported worker runtimes: `deno`, `docker`. If `docker`, the runner will check for Docker availability and inform the user if it is not installed. Docker is never bundled by the runner — it is a user dependency.
+Signing is not part of this spec. Ecosystems that implement signing extend the `author` object with additional fields (e.g. `signing_key`). See the [ecosystem spec](https://github.com/openfeapp/ecosystem-spec) for the signing model used by the Forever App ecosystem.
 
 ---
 
 ### `frontend`
 
 #### `frontend.entry`
+
 **Type:** string  
 **Required:** yes
 
-Path to the entry HTML file inside the `.feapp` package. Typically `index.html`.
+Path to the entry HTML file inside the `.feapp` archive. Typically `index.html`.
+
+#### `frontend.required_apis`
+
+**Type:** array of strings  
+**Required:** no  
+**Default:** empty array
+
+> **STUB** — The registry or standard used to define valid API identifier strings is not yet resolved. See TODOS.md item 1.
+
+Web platform APIs the frontend requires. The runner checks availability before launching and warns the user if an API is unavailable in the current webview. This is the time-capsule field for the frontend — a runner built in the future uses this to know what environment to provide.
+
+```json
+"required_apis": ["indexeddb", "web-crypto", "service-workers"]
+```
 
 #### `frontend.network.allowed`
+
 **Type:** array of strings  
 **Required:** yes  
-**Default:** empty array (no network access)
+**Default:** empty array
 
-An explicit list of domains the frontend PWA is permitted to contact. The runner enforces this at the webview level. An empty array means the app is fully offline — it cannot make any external network requests.
+Hosts the frontend is permitted to contact. The runner enforces this at the webview level. Empty array means fully offline.
 
 ```json
 "network": {
-  "allowed": ["api.openweathermap.org", "*.myservice.com"],
+  "allowed": ["api.example.com", "*.feeds.io"],
   "localhost": [11434]
 }
 ```
 
-`localhost` ports can be declared separately, for apps that communicate with local services such as Ollama.
+`localhost` declares specific ports the frontend may contact on the local machine. Useful for apps that integrate with local services such as Ollama.
 
 ---
 
-### `worker`
+### `workers`
 
-Only present in Tier 2 apps.
+**Required:** no
 
-#### `worker.entry`
+Declares stateful and/or stateless workers. Omit entirely for frontend-only apps. Either key may be omitted if that worker type is not used.
+
+#### `workers.stateful.entry`
+
 **Type:** string  
-**Required:** yes (Tier 2)
+**Required:** yes (if stateful declared)
 
-Path to the worker entry file inside the `.feapp` package.
+Path to the stateful worker module inside the archive.
 
-#### `worker.permissions`
+#### `workers.stateful.tc55`
 
-Declared permissions the worker requires. The runner presents these to the user before the worker starts for the first time. The user must explicitly approve. The worker cannot exceed what is declared here.
+**Type:** string (year)  
+**Required:** yes (if stateful declared)
+
+The TC55 (WinterTC Minimum Common API) snapshot year the worker was built against. The runner exposes exactly the API surface defined by this snapshot. This is the time-capsule field for workers.
+
+```json
+"tc55": "2025"
+```
+
+#### `workers.stateful.permissions`
+
+**Required:** yes (if stateful declared)
 
 ```json
 "permissions": {
-  "network": {
-    "allowed": ["api.example.com"]
-  },
-  "filesystem": {
-    "allowed": ["~/Documents/myapp"]
-  }
+  "network": ["api.example.com"],
+  "storage": "readwrite",
+  "filesystem": ["/videos", "/documents"]
 }
 ```
 
-#### `worker.communication`
+`network` — hosts the worker may contact. Empty array means no external network.
+
+`storage` — `"readwrite"` for stateful workers.
+
+`filesystem` — abstract paths the worker may access via `feapp.fs`. Omit if not needed. The runner maps these to real filesystem paths at launch. The worker never sees real paths.
+
+#### `workers.stateless.entry`
+
+**Type:** string  
+**Required:** yes (if stateless declared)
+
+#### `workers.stateless.tc55`
+
+Same as `workers.stateful.tc55`.
+
+#### `workers.stateless.permissions`
 
 ```json
-"communication": {
-  "direct": true,
-  "remotestorage": true
+"permissions": {
+  "network": ["api.openai.com"],
+  "storage": "readonly"
 }
 ```
 
-`direct` — the frontend and worker can communicate directly when both are running on the same device. The mechanism is a local message channel managed by the runner. The worker cannot expose arbitrary ports.
+`storage` must be `"readonly"` for stateless workers. Declaring `"readwrite"` is an error — the CLI rejects it and the runner refuses to launch. `filesystem` is not available to stateless workers and is ignored with a warning if declared.
 
-`remotestorage` — the frontend and worker can communicate through remoteStorage. This is the only communication mode available when the worker is running on a different machine (cloud library, Raspberry Pi, VPS).
+---
 
-#### `worker.lifecycle`
+### `storage`
+
+**Required:** no
+
+Declares the `feapp.storage` paths this app uses.
 
 ```json
-"lifecycle": {
-  "start": "on_app_open",
-  "stop": "on_app_close"
+"storage": {
+  "paths": ["/myapp/"],
+  "reserved_path_override": "/myapp-internal/"
 }
 ```
 
-When the runner starts and stops the worker process. Future values may include `always` (start with runner, run regardless of app state) and `manual` (user controls lifecycle).
+`paths` — path prefixes the app reads and writes. Must end with `/`.
+
+`reserved_path_override` — remaps the `/feapp/` reserved namespace for this app only. Last resort for apps with existing data at paths under `/feapp/`. CLI warns loudly if present.
 
 ---
 
 ### `data`
 
-#### `data.storage`
-**Type:** string  
-**Values:** `indexeddb`
-
-The browser storage mechanism the app uses. Currently only IndexedDB is supported.
-
 #### `data.export_format`
+
 **Type:** string  
 **Values:** `json`
 
-The format the app uses for data export. Every ForeverApp must support data export. This is non-negotiable.
+The format the app uses for data export. Every `.feapp` app must support data export.
 
 #### `data.schema_version`
+
 **Type:** integer
 
-The current version of the app's data schema. Used to manage migrations between app versions. When a new `.feapp` version declares a higher schema version, the runner prompts the user and runs the migration before opening the app.
-
-#### `data.remotestorage`
-
-Optional. Declares the remoteStorage module and paths this app uses.
-
-```json
-"remotestorage": {
-  "module": "myapp",
-  "paths": ["/myapp/data/", "/myapp/settings/"]
-}
-```
-
-This declaration enables the library to show users which remoteStorage paths each app uses, and enables future tooling to manage cross-app data relationships.
+The current version of the app's data schema. When a new version declares a higher schema version, the runner prompts the user and runs a migration before launching.
 
 ---
 
 ### `optional_dependencies`
 
-External services the app can use but does not require. The runner checks for availability on launch and informs the user. The app must degrade gracefully if these are unavailable.
+External services the app can use but does not require. The runner checks availability on launch and informs the user. The app must degrade gracefully if unavailable.
 
 ```json
 "optional_dependencies": {
@@ -370,10 +342,6 @@ External services the app can use but does not require. The runner checks for av
     "required": false,
     "purpose": "Human-readable explanation shown to user",
     "models": ["llama3.2"]
-  },
-  "docker": {
-    "required": false,
-    "purpose": "Heavy background processing"
   }
 }
 ```
@@ -382,17 +350,18 @@ External services the app can use but does not require. The runner checks for av
 
 ### `distribution`
 
-#### `distribution.update_feed`
-**Type:** string (URL)  
 **Required:** no
 
-URL to a JSON feed the library polls to check for new versions. See `UPDATES.md` for the feed format. If absent, the app does not support automatic update notifications.
+```json
+"distribution": {
+  "update_feed": "https://developer.com/myapp/releases.json",
+  "license": "one-time"
+}
+```
 
-#### `distribution.license`
-**Type:** string  
-**Values:** `one-time`, `free`, `open-source`
+`update_feed` — URL to a feed the library polls for new versions. The format of the feed is defined by the ecosystem, not this spec.
 
-Informs the library how to present the app to the user.
+`license` — `"one-time"`, `"free"`, or `"open-source"`. Informs the library how to present the app.
 
 ---
 
@@ -400,12 +369,10 @@ Informs the library how to present the app to the user.
 
 Before any part of a `.feapp` runs, the runner presents the user with a summary of what the app has declared:
 
-- Network domains the frontend can access
-- Network domains the worker can access
-- Filesystem paths the worker can read or write
-- External services the app connects to
-- remoteStorage paths the app uses
+- Network hosts the frontend may contact
+- Network hosts each worker may contact
+- Filesystem paths the stateful worker may access
+- Optional external services
+- Storage paths the app uses
 
-The user approves once. The runner enforces permanently. No app can do anything that isn't in its manifest.
-
-This is the mechanism that separates ForeverApps from "potential malware" — full transparency before execution, enforced structurally, not by convention.
+The user approves once. The runner enforces permanently.
