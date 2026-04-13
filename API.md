@@ -10,16 +10,139 @@ Each API namespace is available to specific actors. Calling a namespace not avai
 
 | Namespace | Frontend | Stateful Worker | Stateless Worker |
 | --- | --- | --- | --- |
-| [feapp.storage](#feappstorage) | read + write | read + write | read only (get, list) |
+| [feapp.storage](#feappstorage) | read + write | read + write | read + write |
 | [feapp.ipc](#feappipc) | send, on, reconnect | broadcast, sendTo, on | — |
 | [feapp.sessions](#feappsessions) | — | full access | — |
 | [feapp.worker](#feappworker) | stateful status + diagnose | — | — |
 | [feapp.stateless](#feappstateless) | invoke | — | exports |
 | [feapp.schedule](#feappschedule) | — | full access | — |
-| [feapp.fs](#feappfs) | — | full access | — |
+| [feapp.permissions](#feapppermissions) | read-only | read-only | read-only |
 | [feapp.log](#feapplog) | — | full access | full access |
-| [feapp.app](#feappapp) | full access | — | — |
-| [feapp.permissions](#feapppermissions) | full access | — | — |
+| [feapp.app](#feappapp) | full access | full access | full access |
+
+---
+
+## Execution Model
+
+### Stateful worker
+
+The stateful worker is a **long-lived JavaScript process with an event loop**.
+
+**Module-level code** executes once when the worker starts. Module-level variables persist for the lifetime of the worker process. This is the actor's private memory — not durable, but persistent across events within a single stretch of uptime.
+
+**The standard JavaScript event loop** is available. `setTimeout`, `setInterval`, `queueMicrotask`, `Promise` — all work as expected. The worker stays alive as long as the runner keeps it alive.
+
+**`feapp.schedule.on('worker-start')`** fires after module-level code completes and storage is confirmed connected. Use this for initialization that requires storage, network, or IPC. Module-level code should be limited to variable declarations and non-async setup. This event fires on every start, including restarts after healthcheck kills — this is where WebSocket connections to external services should be established so they are re-opened after any restart.
+
+**`setInterval` vs `feapp.schedule.every()`**: both work, different purposes. `setInterval` is fine for internal timing within a single stretch of uptime — retry backoff, debouncing, periodic in-memory cleanup. `feapp.schedule.every()` is the right tool for recurring work that matters — the runner tracks it, enforces timeouts, and surfaces it in library UI. `setInterval` is opaque to the runner and lost on restart. `feapp.schedule.every()` is re-registered when the worker restarts.
+
+**WebSocket client** is guaranteed in the stateful worker environment. The worker can open outgoing WebSocket connections to any address in its granted network set. These connections live as long as the worker does. Reconnection is the developer's responsibility — the `worker-start` event is the right place to establish connections.
+
+**WebAssembly** is guaranteed in the stateful worker environment. WASM modules are subject to the same healthcheck as JavaScript — a WASM computation that blocks the event loop will trigger a kill.
+
+```javascript
+// Example: stateful worker with a persistent WebSocket connection
+let fsService = null
+
+feapp.schedule.on('worker-start', async () => {
+  const config = feapp.permissions.configured('filesystem')
+  if (config && config.endpoints.length > 0) {
+    fsService = new WebSocket(config.endpoints[0])
+    fsService.onmessage = async (msg) => {
+      const event = JSON.parse(msg.data)
+      await feapp.storage.set(`/files/${event.id}`, event.metadata)
+      feapp.ipc.broadcast('file-changed', event)
+    }
+    fsService.onclose = () => {
+      feapp.log.warn('filesystem service disconnected')
+      fsService = null
+    }
+  }
+})
+
+feapp.schedule.every('5m', async () => {
+  const feeds = await feapp.storage.list('/feeds/')
+  for (const feed of feeds) {
+    // ... fetch and process
+  }
+  feapp.ipc.broadcast('feeds-updated', { count: feeds.length })
+}, { timeout: '2m' })
+```
+
+### Stateless worker
+
+The stateless worker is a set of **on-demand functions**. Each invocation is a cold start — a fresh module context with no state carried over from any previous call.
+
+Module-level code (imports, constant declarations) executes on each invocation. Module-level variables do not persist between calls. The runner must guarantee this — even if it keeps the module warm for performance, it must clear module-level state before each invocation.
+
+There is no WebSocket support — invocations are short-lived and there is nothing to hold a connection open. `fetch()` is available for one-shot request/response operations with external services.
+
+**WebAssembly** is guaranteed in the stateless worker environment. Same healthcheck rules apply.
+
+STUB: stateless worker example needs revision for cases where summary is longer than the default 1m timeout
+```javascript
+// Example: stateless worker
+export async function summarize({ text, maxWords = 100 }) {
+  const data = await feapp.storage.get('/config/summarizer')
+  // ... compute summary using config
+  return { summary, wordCount }
+}
+
+export async function processWithAI({ prompt }) {
+  const config = feapp.permissions.configured('llm')
+  if (!config || config.endpoints.length === 0) {
+    throw new Error('No AI endpoint configured')
+  }
+  const response = await fetch(config.endpoints[0] + '/api/generate', {
+    method: 'POST',
+    body: JSON.stringify({ prompt })
+  })
+  const result = await response.json()
+  await feapp.storage.set(`/ai/results/${Date.now()}`, result)
+  return result
+}
+```
+
+---
+
+## Healthcheck
+
+The runner monitors both worker types with a periodic healthcheck that detects a blocked event loop.
+
+**Mechanism:** The runner pings the worker on an internal control channel every 1 second. The runtime responds automatically — this is not a developer-facing API. The developer's code never sees the ping.
+
+**Threshold:** If the response does not arrive within 10 seconds, the event loop is blocked. The default threshold of 10 seconds is configurable in the library.
+
+**On failure — stateful worker:** The runner kills the worker process and initiates a restart with backoff. All in-memory state is lost. `feapp.storage` is the only state that survives.
+
+**On failure — stateless worker:** The runner kills the specific invocation. `feapp.stateless.invoke()` rejects with a `feapp.stateless.ExecutionError` on the frontend side.
+
+**What this means for developers:** Your code must yield to the event loop. No synchronous loop that runs for more than a few seconds. No tight WASM computation that never returns. If you have heavy computation, delegate it to an external service via `fetch()` or WebSocket. The healthcheck enforces this structurally — it is not a suggestion.
+
+---
+
+## Restart Policy
+
+When the stateful worker is killed by the healthcheck or crashes, the runner restarts it with exponential backoff:
+
+```
+Attempt 1:   wait 1s, then restart
+Attempt 2:   wait 10s
+Attempt 3:   wait 30s
+Attempt 4:   wait 1m
+Attempt 5:   wait 5m
+Attempt 6:   wait 10m
+Attempt 7:   wait 20m
+Attempt 8:   wait 40m
+Attempt 9:   wait 60m
+After attempt 9: disable the worker
+```
+
+When the worker is disabled, `feapp.worker.stateful.status` becomes `'disabled'`. The frontend can still open, read `feapp.storage`, and invoke stateless functions. It cannot communicate with the stateful worker. The frontend should detect the `'disabled'` status and inform the user.
+
+The library surfaces a notification when a worker is disabled. The user can re-enable the worker from library settings, which resets the retry counter and immediately attempts a restart. If it fails again, the backoff sequence starts over from the beginning.
+
+A successful start (worker stays alive long enough to respond to healthchecks) resets the retry counter.
 
 ---
 
@@ -63,7 +186,7 @@ feapp.storage.watch('/myapp/articles/', (event) => {
 })
 ```
 
-`origin: 'local'` — change was made by this running instance.  
+`origin: 'local'` — change was made by this running instance.
 `origin: 'remote'` — change came from another device or instance.
 
 ### list() return values
@@ -167,9 +290,10 @@ await feapp.storage.set('/myapp/db', db.export(), { throwOnConflict: true })
 ```
 Frontend:          read + write
 Stateful worker:   read + write
-Stateless worker:  get + list only
-                   watch(), set(), delete() throw feapp.storage.PermissionError
+Stateless worker:  read + write
 ```
+
+All actors have full read and write access to `feapp.storage`. Concurrent writes from multiple actors are safe — `feapp.storage` provides ETags and conditional writes for conflict resolution. Use `throwOnConflict` when silent overwrite would cause data loss.
 
 ### Error reference
 
@@ -298,6 +422,10 @@ feapp.worker.stateful.status
 // 'starting'     — runner is launching the worker, not yet reachable
 // 'running'      — IPC channel is up, send() is safe
 // 'unreachable'  — channel is down for any reason (network, crash, stopped)
+// 'restarting'   — worker was killed or crashed and the runner is restarting
+//                  with backoff — the runner is waiting before the next attempt
+// 'disabled'     — worker exhausted all restart attempts and has been disabled
+//                  re-enable from library settings
 
 // React to status changes.
 feapp.worker.stateful.on('status-change', (status) => { ... })
@@ -314,19 +442,30 @@ const result = await feapp.worker.stateful.diagnose()
 
 `status` describes the channel as the frontend observes it. `diagnose()` is an active probe that gives a more precise picture of why the channel is down. Call `diagnose()` deliberately — it makes network requests.
 
+### Frontend behavior during stateful worker downtime
+
+When the stateful worker is in any status other than `'running'`, the frontend can still:
+- Read and write `feapp.storage` directly
+- Invoke stateless functions via `feapp.stateless.invoke()`
+- Read permissions via `feapp.permissions`
+
+The frontend cannot send IPC messages. `feapp.ipc.send()` will throw. The frontend should detect the status and adapt its UI accordingly.
+
 ---
 
 ## feapp.stateless
 
-On-demand computation. The frontend invokes an exported function in the stateless worker by name and awaits the result. The stateless worker is always available — there is no lifecycle to manage.
+On-demand computation. The frontend invokes an exported function in the stateless worker by name and awaits the result. The stateless worker is always available and fully independent of the stateful worker.
 
 ### Frontend side
 
 ```javascript
 const result = await feapp.stateless.invoke(name, args)
-// args must be JSON-serializable
-// result must be JSON-serializable
 ```
+
+`args` — optional. Must be JSON-serializable if provided. See [Serialization contract](#serialization-contract).
+
+`result` — the return value from the function. Must be JSON-serializable. Functions that do not explicitly return a value resolve to `undefined`.
 
 ### Stateless worker side
 
@@ -344,11 +483,41 @@ export async function estimateReadTime({ text }) {
 }
 ```
 
-### External invocation (webhooks)
+### Serialization contract
 
-The stateless worker may be invoked by external HTTP requests in addition to frontend calls. This enables webhook integrations — external services posting directly to the app's stateless worker. When invoked externally, `session_id` in the wire envelope is null. The function signature is identical; the function does not know how it was invoked.
+Arguments and return values must be **JSON-serializable**. The following types are permitted at the boundary:
 
-> **Note** — Authentication and security implications of external stateless invocation are not yet fully specified. See TODOS.md item 7.
+```
+string
+number (finite only — NaN and Infinity are not permitted)
+boolean
+null
+plain object (all values must also be JSON-serializable)
+array (all elements must also be JSON-serializable)
+```
+
+The runner validates at the boundary. If the argument or return value contains a type not in this list, `invoke()` rejects with a `feapp.stateless.SerializationError` **before** the function is called (for invalid arguments) or **before** the result is returned to the caller (for invalid return values).
+
+The runner must not silently coerce invalid types. `undefined` nested inside a value (e.g., `{ a: undefined }`) is a `SerializationError`. Functions, symbols, `Date`, `Map`, `Set`, `Uint8Array`, and all other non-JSON types are `SerializationError`.
+
+**Exception:** A function that returns `undefined` (no explicit `return` statement) is not a serialization error. It means "completed successfully with no result." `invoke()` resolves to `undefined`.
+
+**Binary data:** If you need to pass binary data across the stateless boundary, base64-encode it as a string. This makes the data self-describing and keeps the serialization contract simple.
+
+### Invocation timeout
+
+Each stateless invocation has a timeout. The default is **1 minute**. The timeout is configurable in the library.
+
+If a function does not return within the timeout, the runner kills the invocation and `invoke()` rejects with a `feapp.stateless.TimeoutError`. This protects against hung async operations (e.g., `fetch()` to an unresponsive external service) which do not block the event loop and therefore are not caught by the healthcheck.
+
+### Long-running work belongs in the stateful worker
+
+If a task takes longer than the stateless timeout — syncing a large dataset, processing a backlog of records, running a multi-step AI pipeline, batch-importing paginated API results — it belongs in the stateful worker. The pattern:
+
+1. Frontend sends a "start job" message over `feapp.ipc`
+2. Stateful worker runs the job, writing progress to `feapp.storage` (e.g., `/jobs/{id}/progress`)
+3. Frontend watches the progress path via `feapp.storage.watch()` and renders a progress bar
+4. Stateful worker writes the final result and broadcasts completion over IPC
 
 ### Error model
 
@@ -363,16 +532,24 @@ try {
     // function threw internally
     console.error(e.cause)  // the original error
   }
+  if (e instanceof feapp.stateless.SerializationError) {
+    // argument or return value is not JSON-serializable
+  }
+  if (e instanceof feapp.stateless.TimeoutError) {
+    // function did not return within the timeout
+  }
 }
 ```
 
-Both `NotFoundError` and `ExecutionError` extend `ExecutionError` for catch-all handling.
+All stateless errors extend `feapp.stateless.Error` for catch-all handling.
 
 ---
 
 ## feapp.schedule
 
 Available to the stateful worker only. Registers recurring callbacks that execute regardless of whether any frontend is connected.
+
+Neither `every()` nor `cron()` is the right tool for CPU-intensive computation. Schedule callbacks run on the stateful worker's event loop. If a callback blocks the event loop, the healthcheck will kill the worker. Use schedule callbacks to coordinate async operations — fetching data, writing to storage, delegating heavy work to external services.
 
 ### feapp.schedule.every()
 
@@ -386,9 +563,7 @@ feapp.schedule.every(interval, fn, options)
 
 > **STUB** — Minimum interval value (e.g. 1s) not yet confirmed. See TODOS.md item 7.
 
-`options.timeout` — string duration. Strongly recommended. Runner kills the invocation on timeout, logs via `feapp.log.error`, and starts the next interval gap.
-
-> **STUB** — Whether timeout is required (CLI error) or recommended (CLI warning) for every() is not yet confirmed. See TODOS.md item 6.
+`options.timeout` — string duration. Strongly recommended. Protects the schedule from stalled async operations — a callback that awaits a hung `fetch()` or an unresponsive WebSocket will never return, silently stopping the schedule. When the timeout fires, the runner cancels that specific callback invocation (not the worker process), logs via `feapp.log.error`, and allows the next scheduled invocation to proceed normally. The CLI emits a warning if `timeout` is absent.
 
 `options.max_concurrent` — integer, default `1`.
 
@@ -410,7 +585,7 @@ feapp.schedule.cron(expression, fn, options)
 
 `expression` — standard 5-field cron syntax: `'0 3 * * *'`.
 
-`options.timeout` — required. CLI error if absent. Runner kills hung invocations.
+`options.timeout` — **required**. CLI error if absent. Protects the schedule from stalled async operations. When the timeout fires, the runner cancels that specific callback invocation (not the worker process), logs via `feapp.log.error`, and allows the next scheduled invocation to proceed normally.
 
 `options.max_concurrent` — integer, default `1`. If all slots full when the cron time arrives, that firing is skipped.
 
@@ -423,44 +598,17 @@ feapp.schedule.on(event, fn)
 // event: 'worker-start' | 'storage-connected'
 ```
 
-`'worker-start'` — fires once when the worker module first loads.  
-`'storage-connected'` — fires once after storage is confirmed reachable.
+`'worker-start'` — fires once when the worker module first loads and storage is confirmed connected. Fires on every start, including restarts. This is the right place to establish WebSocket connections to external services, initialize in-memory state from storage, and perform any setup that requires async operations.
+
+`'storage-connected'` — fires once after storage is confirmed reachable. In practice, `worker-start` fires after `storage-connected`, so most developers should use `worker-start`.
 
 Note: `'app-open'` and `'app-close'` events do not exist. The stateful worker lifecycle is independent of the frontend. Use `feapp.sessions.on('connect', ...)` to detect frontend connections.
 
 ---
 
-## feapp.fs
-
-Available to the stateful worker only. Provides access to filesystem paths declared in the manifest under `workers.stateful.permissions.filesystem`.
-
-Paths are abstract — declared in the manifest and mapped to real filesystem locations by the runner at launch. The worker never sees real paths and never constructs paths containing system locations or user identity.
-
-```javascript
-feapp.fs.read(path)              // returns Uint8Array
-feapp.fs.write(path, data)       // data: Uint8Array | string
-feapp.fs.list(path)              // returns string[] of immediate children
-feapp.fs.delete(path)
-feapp.fs.watch(path, handler)    // returns unwatch function
-feapp.fs.exists(path)            // returns boolean
-```
-
-Access outside declared manifest paths throws `feapp.fs.PermissionError`.
-
-> **STUB** — The following aspects of feapp.fs are not yet specified and need depth:
-> - Large file handling and size limits
-> - Streaming API (vs Uint8Array for large files)
-> - Memory constraints and what happens when a read/write exceeds available memory
-> - Buffer ownership — is the Uint8Array from read() a copy or a view?
-> - Concurrent access — behavior when two schedule callbacks write the same path simultaneously
->
-> See TODOS.md item 3.
-
----
-
 ## feapp.log
 
-Available to both worker types. The runner captures all log output and surfaces it in library UI. Logs are never exposed inside a `.feapp` frontend.
+Available to both worker types only. The runner captures all log output and surfaces it in library UI. Logs are never exposed inside a `.feapp` frontend.
 
 ```javascript
 feapp.log.info(message, context?)
@@ -475,11 +623,15 @@ feapp.log.error('storage write failed', err)
 
 Log output is essential for debugging apps long after the original developer is unreachable. Log generously.
 
+### console.log in workers
+
+The TC55 Console API is available in both worker types. `console.log`, `console.warn`, and `console.error` are captured by the runner and surfaced alongside `feapp.log` output in library UI. They are not silently discarded. `feapp.log` is preferred because it accepts structured context, but `console` works and goes to the same place.
+
 ---
 
 ## feapp.app
 
-Available to the frontend only. Read-only metadata about the running app and current session.
+Available to all actors. Read-only metadata about the running app.
 
 ```javascript
 feapp.app.id        // string — 'com.developer.feedreader'
@@ -496,12 +648,105 @@ feapp.app.profile   // string — opaque stable identifier for this account+app 
 
 ## feapp.permissions
 
-> **STUB** — Not yet designed. See TODOS.md item 2.
->
-> `feapp.permissions` will provide a runtime API for requesting additional permissions
-> declared in the manifest but not yet granted by the user. The design needs to specify:
-> - Call shape
-> - Whether the app pauses during the user confirmation dialog
-> - Which component restarts on approval
-> - Whether workers can call it or only the frontend
-> - How the grant flows through the ecosystem
+Available to all actors. Read-only. Reflects the permissions granted by the user for this session.
+
+The granted set is frozen at launch. It does not change during the session. If the user changes permissions in the library, the change takes effect on next launch.
+
+### Querying permissions
+
+```javascript
+// Check a specific permission.
+feapp.permissions.query(permission)
+// Returns: 'granted' | 'denied'
+
+// 'granted' — the user approved this permission, the runner is enforcing it
+// 'denied'  — the user rejected this permission, or it was not declared in the manifest
+```
+
+`permission` is a string in the format `type:value`:
+
+```javascript
+feapp.permissions.query('network:https://api.example.com')  // 'granted'
+feapp.permissions.query('network:http://localhost:11434')    // 'denied'
+```
+
+The permission string format is `{type}:{value}` where `type` is `network` and `value` is the address as declared in the manifest.
+
+### Listing granted permissions
+
+```javascript
+// Everything currently granted for this session.
+feapp.permissions.granted()
+// Returns: string[]
+// [
+//   'network:https://api.example.com',
+//   'network:https://feeds.example.com'
+// ]
+```
+
+This includes both static permissions and the resolved values of configured permissions. The app can use this to determine what UI to show.
+
+### Reading configured endpoints
+
+```javascript
+// Read the user-configured values for a network_configured slot.
+feapp.permissions.configured(name)
+// Returns: { endpoints: string[] } | null
+
+feapp.permissions.configured('llm')
+// { endpoints: ['http://localhost:11434'] }
+
+feapp.permissions.configured('feeds')
+// { endpoints: ['https://blog.example.com', '**.wordpress.com'] }
+
+feapp.permissions.configured('sync')
+// { endpoints: ['https://myserver.example.com:5984'] }
+
+feapp.permissions.configured('nonexistent')
+// null — not declared in the manifest
+```
+
+Returns `null` if the name is not declared in the manifest. Returns `{ endpoints: [] }` if the slot is declared but the user has not configured any endpoints (or rejected the permission).
+
+### Access by actor
+
+```
+Frontend:          feapp.permissions.query(), granted(), configured()
+Stateful worker:   feapp.permissions.query(), granted(), configured()
+Stateless worker:  feapp.permissions.query(), granted(), configured()
+```
+
+Workers use `configured()` to discover endpoint URLs for external services at startup, without waiting for the frontend to relay them.
+
+### Design guidance
+
+```javascript
+// Frontend: adapt the UI to the user's permission choices.
+if (feapp.permissions.query('network:https://api.example.com') === 'granted') {
+  showSyncButton()
+} else {
+  showMessage('Enable API access in your library settings to sync.')
+}
+
+// Stateful worker: discover external service endpoints at startup.
+feapp.schedule.on('worker-start', async () => {
+  const llm = feapp.permissions.configured('llm')
+  if (llm && llm.endpoints.length > 0) {
+    initAIConnection(llm.endpoints[0])
+  }
+})
+
+// Stateless worker: check endpoints before calling.
+export async function callAI({ prompt }) {
+  const llm = feapp.permissions.configured('llm')
+  if (!llm || llm.endpoints.length === 0) {
+    throw new Error('No AI endpoint configured')
+  }
+  return await fetch(llm.endpoints[0] + '/api/generate', {
+    method: 'POST',
+    body: JSON.stringify({ prompt })
+  }).then(r => r.json())
+}
+```
+
+The app never prompts the user for permissions directly. Permission management happens in the library UI. The app reads the current state and adapts.

@@ -51,9 +51,10 @@ A `.feapp` app has four parts. Each one maps directly to a concept in the model.
 
 ```
 Stateful worker     the actor
+                    a long-lived JavaScript process with an event loop
                     runs continuously, independently of the frontend
-                    owns the app's data lifecycle
-                    processes messages from the frontend
+                    holds persistent connections to external services
+                    processes messages from the frontend via IPC
                     does scheduled work on the user's behalf
 
 feapp.storage       the actor's memory, externalized
@@ -61,9 +62,10 @@ feapp.storage       the actor's memory, externalized
                     the source of truth for everything that must persist
                     owned by the user, not by any server
 
-Stateless worker    pure functions
-                    on-demand computation requested by the frontend
-                    no persistent state, no memory between calls
+Stateless worker    on-demand functions
+                    computation requested by the frontend
+                    each invocation is a cold start — no memory between calls
+                    reads and writes feapp.storage
                     fast, concurrent, always available
 
 Frontend            the UI that talks to the actor
@@ -100,13 +102,48 @@ This is not because `.feapp` hides the complexity. It is because the actor model
 
 ---
 
+## What the stateful worker is for
+
+The stateful worker is a **long-lived JavaScript process**. Its module-level code executes once when the worker starts. Module-level variables persist for the lifetime of the worker process. The standard JavaScript event loop is available — `setTimeout`, `setInterval`, `queueMicrotask`, `Promise`, all of it.
+
+The stateful worker is the right place for:
+
+- **Persistent connections.** WebSocket connections to external services that push events in real time. The worker holds the connection open for its entire lifetime.
+- **Background schedules.** Recurring work that happens whether or not any frontend is open.
+- **Long-running async jobs.** Multi-step operations that take minutes — syncing a large dataset, processing a backlog of feeds, running a multi-step pipeline. The stateful worker runs the job, writes progress to `feapp.storage`, and the frontend watches the progress path.
+- **Coordination.** Anything where order matters, where state accumulates, or where multiple events need to be processed sequentially.
+
+The stateful worker is **not** the right place for CPU-intensive computation — image processing, ML inference, video transcoding, or anything that would block the event loop. These belong in external services the worker delegates to over the network. The runner enforces this with a healthcheck: if the worker's event loop is blocked for longer than a threshold, the worker is killed and restarted. All in-memory state is lost. `feapp.storage` is the only state that survives.
+
+---
+
 ## What the stateless worker is for
 
-Not every computation needs to be stateful. Many things the frontend needs are pure: summarize this text, parse this file, estimate this value, transform this data. Running these inside the stateful worker would block it from processing other messages. Running them in the frontend would expose API keys.
+Not every computation needs to be stateful. Many things the frontend needs are on-demand: summarize this text, parse this data, validate this input, transform this structure, compute this estimate. Running these inside the stateful worker would require an IPC round-trip for something that has no reason to be stateful.
 
-The stateless worker handles this. It is a set of exported functions the frontend can call by name. Each call is independent. Multiple calls can run concurrently. The stateless worker has no memory between calls — it receives input, computes output, returns. This is the right model for on-demand computation.
+The stateless worker handles this. It is a set of exported functions the frontend can call by name. Each invocation is a cold start — a fresh module context, no state carried over from any previous call. Multiple invocations run concurrently. The function receives input, does work, returns a result.
 
-The stateless worker reads `feapp.storage` but cannot write to it. Writes belong to the stateful worker, which is the single owner of the app's data. This is not an arbitrary restriction — it is what prevents two concurrent stateless invocations from corrupting shared state.
+Stateless functions can read and write `feapp.storage`. This is safe because storage has built-in conflict resolution — ETags and conditional writes handle concurrent access. The function may also `fetch()` external services for one-shot request/response operations.
+
+Like the stateful worker, the stateless worker is **not** for CPU-intensive computation. The same healthcheck applies. If a stateless invocation blocks the event loop beyond the threshold, it is killed and returns an error to the caller. Heavy computation belongs in external services.
+
+---
+
+## Native capabilities and external services
+
+A `.feapp` file is a sandboxed artifact. It cannot access the local filesystem, USB devices, Bluetooth, serial ports, or any other native hardware directly. This is a deliberate design decision — it is what makes `.feapp` files portable, safe to run, and viable on every deployment topology from a local desktop to a cloud VPS.
+
+When an app needs native capabilities, the answer is an **external service** — a local process that the worker connects to over the network.
+
+```
+.feapp stateful worker  ←— WebSocket —→  local filesystem watcher (native binary)
+.feapp stateful worker  ←— WebSocket —→  USB device bridge (native binary)
+.feapp stateless worker ←— fetch ——→  local image processor (native binary)
+```
+
+The manifest declares these connections through `network_configured`. The user points them at whatever local service they're running. The runner enforces the network boundary. The worker never touches native hardware — it talks to something that does.
+
+This pattern has a critical property: the `.feapp` file itself remains portable and sandboxed. The native capability lives outside the sandbox as a separate, user-installed program. A cloud deployment of the same app simply points the configured endpoint at a cloud-hosted version of the same service. The worker code is identical in both cases.
 
 ---
 
@@ -114,13 +151,15 @@ The stateless worker reads `feapp.storage` but cannot write to it. Writes belong
 
 Because the stateful worker is an actor — always running, owning its data, communicating by message — a class of applications becomes possible that is difficult or impossible to build with request/response infrastructure:
 
-**Apps that outlive their developers.** The stateful worker has no external dependencies. It talks to `feapp.storage`, which is backed by the remoteStorage protocol — a simple, open HTTP standard anyone can implement. An app built today can run in thirty years on a runner built then, reading the same manifest, providing the same environment. No server to maintain. No hosting bill. No vendor to go out of business.
+**Apps that outlive their developers.** The stateful worker has no external dependencies it doesn't explicitly declare. It talks to `feapp.storage`, which is backed by the remoteStorage protocol — a simple, open HTTP standard anyone can implement. An app built today can run in thirty years on a runner built then, reading the same manifest, providing the same environment. No server to maintain. No hosting bill. No vendor to go out of business.
 
 **Apps that work for the user when the user isn't there.** A feed reader that syncs in the background. A finance app that reconciles accounts overnight. A monitoring tool that checks something every five minutes and alerts the user when it changes. These are natural in the actor model. They require significant infrastructure in the request/response model.
 
 **Apps that feel instant.** Because the stateful worker is always running and connected, pushing data to the frontend is as simple as `feapp.ipc.broadcast()`. There is no polling. There is no latency from a cold start. The actor is already there.
 
 **Apps that the user truly owns.** The user's data lives in `feapp.storage`, which can be backed by their own remoteStorage server, or by any conformant provider they choose. The app developer has no access to the data. The data does not disappear if the developer's company shuts down. This is ownership in the literal sense.
+
+**Apps that extend into native capabilities.** Through the external service pattern, a `.feapp` can talk to local filesystem watchers, hardware bridges, AI inference servers, or any other native process — without sacrificing portability or sandboxing.
 
 ---
 

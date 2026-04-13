@@ -56,28 +56,34 @@ A JSON file named `feapp.json` at the root of the `.feapp` archive.
     "entry": "index.html",
     "required_apis": ["indexeddb", "web-crypto", "service-workers"],
     "network": {
-      "allowed": [],
-      "localhost": [11434]
+      "allowed": ["https://cdn.example.com"]
     }
   },
   "workers": {
+    "permissions": {
+      "network": ["https://api.example.com"]
+    },
     "stateful": {
       "entry": "workers/stateful.js",
-      "tc55": "2025",
-      "permissions": {
-        "network": ["*.rss.com"],
-        "storage": "readwrite"
-      }
+      "tc55": "2025"
     },
     "stateless": {
       "entry": "workers/stateless.js",
-      "tc55": "2025",
-      "permissions": {
-        "network": ["api.openai.com"],
-        "storage": "readonly"
-      }
+      "tc55": "2025"
     }
   },
+  "network_configured": [
+    {
+      "name": "llm",
+      "purpose": "Local AI inference",
+      "default": "http://localhost:11434",
+      "count": 1
+    },
+    {
+      "name": "feeds",
+      "purpose": "RSS feed sources"
+    }
+  ],
   "storage": {
     "paths": ["/feedreader/"]
   },
@@ -92,7 +98,7 @@ A JSON file named `feapp.json` at the root of the `.feapp` archive.
 }
 ```
 
-### With filesystem access
+### With external native services
 
 ```json
 {
@@ -110,16 +116,28 @@ A JSON file named `feapp.json` at the root of the `.feapp` archive.
     }
   },
   "workers": {
+    "permissions": {
+      "network": []
+    },
     "stateful": {
       "entry": "workers/stateful.js",
-      "tc55": "2025",
-      "permissions": {
-        "network": [],
-        "storage": "readwrite",
-        "filesystem": ["/videos", "/thumbnails"]
-      }
+      "tc55": "2025"
     }
   },
+  "network_configured": [
+    {
+      "name": "filesystem",
+      "purpose": "Local filesystem watcher for video cataloging",
+      "default": "ws://localhost:9876",
+      "count": 1
+    },
+    {
+      "name": "transcoder",
+      "purpose": "Local video transcoding service",
+      "default": "http://localhost:9877",
+      "count": 1
+    }
+  ],
   "storage": {
     "paths": ["/videolibrary/"]
   },
@@ -136,7 +154,7 @@ A JSON file named `feapp.json` at the root of the `.feapp` archive.
 
 ### `feapp`
 
-**Type:** string  
+**Type:** string
 **Required:** yes
 
 The spec version this manifest targets. A runner that does not support this exact version must refuse to open the file and tell the user clearly. No best-effort mode. No compatibility assumptions.
@@ -145,8 +163,8 @@ The spec version this manifest targets. A runner that does not support this exac
 
 ### `id`
 
-**Type:** string  
-**Required:** yes  
+**Type:** string
+**Required:** yes
 **Format:** reverse domain notation (`com.developer.appname`)
 
 Globally unique identifier for this app. Stable across versions — changing the ID creates a new app as far as any runner or library is concerned.
@@ -155,17 +173,17 @@ Globally unique identifier for this app. Stable across versions — changing the
 
 ### `name`
 
-**Type:** string  
+**Type:** string
 **Required:** yes
 
-Human-readable display name. Used in runner UI, library UI, and available to the frontend via `feapp.app.name`.
+Human-readable display name. Used in runner UI, library UI, and available to all actors via `feapp.app.name`.
 
 ---
 
 ### `version`
 
-**Type:** string  
-**Required:** yes  
+**Type:** string
+**Required:** yes
 **Format:** semantic versioning (`major.minor.patch`)
 
 The version of this `.feapp` file. Used by libraries to compare against update feeds and to enforce exact version matching across components.
@@ -174,7 +192,7 @@ The version of this `.feapp` file. Used by libraries to compare against update f
 
 ### `author`
 
-**Type:** object  
+**Type:** object
 **Required:** yes
 
 ```json
@@ -193,15 +211,15 @@ Signing is not part of this spec. Ecosystems that implement signing extend the `
 
 #### `frontend.entry`
 
-**Type:** string  
+**Type:** string
 **Required:** yes
 
 Path to the entry HTML file inside the `.feapp` archive. Typically `index.html`.
 
 #### `frontend.required_apis`
 
-**Type:** array of strings  
-**Required:** no  
+**Type:** array of strings
+**Required:** no
 **Default:** empty array
 
 > **STUB** — The registry or standard used to define valid API identifier strings is not yet resolved. See TODOS.md item 1.
@@ -212,22 +230,26 @@ Web platform APIs the frontend requires. The runner checks availability before l
 "required_apis": ["indexeddb", "web-crypto", "service-workers"]
 ```
 
-#### `frontend.network.allowed`
+#### `frontend.network`
 
-**Type:** array of strings  
-**Required:** yes  
-**Default:** empty array
-
-Hosts the frontend is permitted to contact. The runner enforces this at the webview level. Empty array means fully offline.
+**Type:** object
+**Required:** yes
 
 ```json
 "network": {
-  "allowed": ["api.example.com", "*.feeds.io"],
-  "localhost": [11434]
+  "allowed": ["https://api.example.com", "ws://realtime.example.com"]
 }
 ```
 
-`localhost` declares specific ports the frontend may contact on the local machine. Useful for apps that integrate with local services such as Ollama.
+`allowed` — network addresses the frontend is permitted to contact. Value is either an array of addresses or `"*"` (unrestricted). Empty array means fully offline. See [Network addresses](#network-addresses) for the address syntax.
+
+```json
+"network": { "allowed": "*" }
+```
+
+The runner enforces frontend network permissions via [Content-Security-Policy](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy). The address syntax defined in this spec is designed to be translatable to CSP `connect-src`, `img-src`, and related directives. Runners must produce a valid CSP from the granted frontend network set. When `"*"` is granted, the runner sets the relevant CSP directives to `*`.
+
+The frontend does not have access to `network_configured` endpoints or worker network permissions. Its network access is defined entirely by `frontend.network.allowed`.
 
 ---
 
@@ -235,63 +257,91 @@ Hosts the frontend is permitted to contact. The runner enforces this at the webv
 
 **Required:** no
 
-Declares stateful and/or stateless workers. Omit entirely for frontend-only apps. Either key may be omitted if that worker type is not used.
+Declares stateful and/or stateless workers. Omit entirely for frontend-only apps. Either `stateful` or `stateless` may be omitted if that worker type is not used.
 
-#### `workers.stateful.entry`
+#### `workers.permissions`
 
-**Type:** string  
-**Required:** yes (if stateful declared)
+**Required:** yes (if workers declared)
 
-Path to the stateful worker module inside the archive.
-
-#### `workers.stateful.tc55`
-
-**Type:** string (year)  
-**Required:** yes (if stateful declared)
-
-The TC55 (WinterTC Minimum Common API) snapshot year the worker was built against. The runner exposes exactly the API surface defined by this snapshot. This is the time-capsule field for workers.
-
-```json
-"tc55": "2025"
-```
-
-#### `workers.stateful.permissions`
-
-**Required:** yes (if stateful declared)
+Worker permissions are declared once and shared by both the stateful and stateless worker. There is no per-worker permission scoping — both workers operate under the same network set.
 
 ```json
 "permissions": {
-  "network": ["api.example.com"],
-  "storage": "readwrite",
-  "filesystem": ["/videos", "/documents"]
+  "network": ["https://feeds.example.com", "http://localhost:11434"]
 }
 ```
 
-`network` — hosts the worker may contact. Empty array means no external network.
+`network` — network addresses both workers may contact. Value is either an array of addresses or `"*"` (unrestricted). Empty array means no external network access. `network_configured` endpoints are merged into this set at enforcement time. See [Network addresses](#network-addresses) for the address syntax.
 
-`storage` — `"readwrite"` for stateful workers.
+`storage` access is implicit, not declared. All actors always have read-write access to `feapp.storage`. This is structural — not a permission the user grants or the manifest declares.
 
-`filesystem` — abstract paths the worker may access via `feapp.fs`. Omit if not needed. The runner maps these to real filesystem paths at launch. The worker never sees real paths.
-
-#### `workers.stateless.entry`
-
-**Type:** string  
-**Required:** yes (if stateless declared)
-
-#### `workers.stateless.tc55`
-
-Same as `workers.stateful.tc55`.
-
-#### `workers.stateless.permissions`
+#### `workers.stateful`
 
 ```json
-"permissions": {
-  "network": ["api.openai.com"],
-  "storage": "readonly"
+"stateful": {
+  "entry": "workers/stateful.js",
+  "tc55": "2025"
 }
 ```
 
-`storage` must be `"readonly"` for stateless workers. Declaring `"readwrite"` is an error — the CLI rejects it and the runner refuses to launch. `filesystem` is not available to stateless workers and is ignored with a warning if declared.
+`entry` — path to the stateful worker module inside the archive.
+
+`tc55` — the TC55 (WinterTC Minimum Common API) snapshot year the worker was built against. The runner exposes exactly the API surface defined by this snapshot. This is the time-capsule field for workers.
+
+#### `workers.stateless`
+
+```json
+"stateless": {
+  "entry": "workers/stateless.js",
+  "tc55": "2025"
+}
+```
+
+Same fields as `workers.stateful`.
+
+---
+
+### `network_configured`
+
+**Type:** array of objects
+**Required:** no
+
+For network endpoints the developer cannot know at build time — user-chosen servers, local services, self-hosted infrastructure, native capability bridges.
+
+```json
+"network_configured": [
+  {
+    "name": "llm",
+    "purpose": "Local AI inference",
+    "default": "http://localhost:11434",
+    "count": 1
+  },
+  {
+    "name": "feeds",
+    "purpose": "RSS feed sources"
+  },
+  {
+    "name": "filesystem",
+    "purpose": "Local filesystem watcher",
+    "default": "ws://localhost:9876",
+    "count": 1
+  }
+]
+```
+
+`network_configured` is declared at the top level of the manifest. Configured endpoints are merged into the worker network enforcement set. They are not available to the frontend.
+
+`name` — required. `a-z0-9` only. Unique within the array. Used as the key in the `feapp.permissions.configured()` API.
+
+`purpose` — required. Human-readable string shown to the user by the library. Explains what this endpoint is for.
+
+`default` — optional. A valid network address. Pre-filled in the library UI. The user can change it.
+
+`count` — optional integer, minimum 1. If present, the library enforces that the user configures at most this many endpoints for this slot. If absent, no limit — the user can add as many as they want. The CLI rejects `count: 0`.
+
+The library presents configured permissions as input fields, not just checkboxes. The user provides endpoint values, or skips the slot entirely. The library stores the configured values.
+
+All configured values are subject to the same network address syntax and validation rules as static network permissions. Wildcards are permitted in user-provided values (e.g., the user can configure `**.wordpress.com` as a feed source).
 
 ---
 
@@ -318,7 +368,7 @@ Declares the `feapp.storage` paths this app uses.
 
 #### `data.export_format`
 
-**Type:** string  
+**Type:** string
 **Values:** `json`
 
 The format the app uses for data export. Every `.feapp` app must support data export.
@@ -328,23 +378,6 @@ The format the app uses for data export. Every `.feapp` app must support data ex
 **Type:** integer
 
 The current version of the app's data schema. When a new version declares a higher schema version, the runner prompts the user and runs a migration before launching.
-
----
-
-### `optional_dependencies`
-
-External services the app can use but does not require. The runner checks availability on launch and informs the user. The app must degrade gracefully if unavailable.
-
-```json
-"optional_dependencies": {
-  "ollama": {
-    "endpoint": "http://localhost:11434",
-    "required": false,
-    "purpose": "Human-readable explanation shown to user",
-    "models": ["llama3.2"]
-  }
-}
-```
 
 ---
 
@@ -365,14 +398,128 @@ External services the app can use but does not require. The runner checks availa
 
 ---
 
+## Permissions
+
+Every permission in the manifest is a request. The user decides what to grant. The app runs regardless — operations on ungrantable resources throw `feapp.PermissionError`.
+
+The manifest is the ceiling. No mechanism — runtime, library, user — can grant a permission not declared in the manifest.
+
+### Permission lifecycle
+
+```
+1. Developer declares permissions in the manifest.
+2. Library presents all permissions to the user as a checklist on first run.
+3. User approves or rejects each permission individually.
+4. Library stores the user's decisions.
+5. On launch, library passes the granted set to the runner.
+6. Runner enforces exactly the granted set. Nothing more, nothing less.
+```
+
+On version upgrade, the library diffs the new manifest's permissions against its stored decisions. New permissions are presented to the user. Previously approved permissions remain approved. Previously rejected permissions remain rejected. The user can change any decision from library settings at any time.
+
+### Network addresses
+
+A network address appears in `frontend.network.allowed`, `workers.permissions.network`, and `network_configured` entries. The syntax is:
+
+```
+[protocol://]host[:port]
+[protocol://]*.host[:port]
+[protocol://]**.host[:port]
+```
+
+`protocol` — one of `http`, `https`, `ws`, `wss`, or `*`. If `://` is omitted entirely, `*` is assumed (all protocols permitted).
+
+`host` — a valid host as defined by the [WHATWG URL Standard](https://url.spec.whatwg.org/#host-parsing). This includes domain names, IPv4 addresses, and IPv6 addresses.
+
+`port` — optional. If omitted, all ports on that host are permitted. If present, only that specific port is permitted.
+
+`*.` — single-level wildcard. `*.example.com` matches `api.example.com` but does not match `deep.sub.example.com` or `example.com` itself.
+
+`**.` — multi-level wildcard. `**.example.com` matches `api.example.com`, `deep.sub.example.com`, and any depth of subdomain. Does not match `example.com` itself.
+
+**Wildcard depth rule:** After `*.` or `**.` there must be at least two domain segments. `*.example.com` is valid. `*.com` is not. `**.co.uk` is not. `**.example.co.uk` is valid. Wildcards are only valid before domain hosts, not before IP addresses. The CLI rejects invalid wildcards.
+
+**Examples:**
+
+```
+api.example.com                  any protocol, any port
+https://api.example.com          HTTPS only, any port
+http://localhost:11434           HTTP only, port 11434
+ws://192.168.1.50:8080           WebSocket only, port 8080
+*.example.com                    any protocol, single-level subdomains
+**.cdn.example.com:443           any protocol, any subdomain depth, port 443
+```
+
+### Frontend vs worker network
+
+Frontend and worker network permissions use the same address syntax but are enforced differently and serve different roles.
+
+```
+                        Frontend                    Workers
+Enforcement             CSP in the webview          Runner process-level
+Configured endpoints    Not included                Included
+Scope                   UI-facing requests          Backend operations
+Protocols in practice   Mixed content rules apply   No browser restrictions
+                        (browser may block HTTP     (HTTP to local services
+                        from HTTPS contexts)        works without issue)
+```
+
+The frontend network set is for resources the UI itself needs — CDNs, APIs called directly from browser code, WebSocket connections for real-time UI updates.
+
+The worker network set is for backend operations — fetching feeds, calling LLM APIs, syncing to user-configured servers, connecting to local native services over WebSocket. Configured endpoints (`network_configured`) are merged into the worker set only.
+
+### How the runner receives permissions
+
+At launch, the library passes the complete granted set to the runner as part of the B1 profile context:
+
+```json
+{
+  "granted": {
+    "frontend_network": [
+      "https://api.example.com",
+      "ws://realtime.example.com"
+    ],
+    "worker_network": [
+      "https://feeds.example.com",
+      "http://localhost:11434"
+    ],
+    "network_configured": {
+      "llm": ["http://localhost:11434"],
+      "feeds": ["https://blog.example.com", "**.wordpress.com"],
+      "filesystem": ["ws://localhost:9876"]
+    }
+  }
+}
+```
+
+Any `_network` field may be `"*"` instead of an array, meaning unrestricted.
+
+The runner merges `worker_network` and all `network_configured` values into one enforcement set for both workers. At enforcement time, the runner does not distinguish between static and configured origins.
+
+If a permission was declared in the manifest but rejected by the user, it is absent from the granted set. The runner never sees it.
+
+### CLI validation
+
+The CLI validates the manifest at package time:
+
+```
+Network addresses match the syntax defined above
+Network values are either an array of addresses or "*"
+Wildcard depth rule: at least two domain segments after *. or **.
+Wildcards only before domain hosts, not IP addresses
+network_configured names are a-z0-9, unique
+network_configured count is integer >= 1 if present
+```
+
+---
+
 ## The Manifest as Trust Declaration
 
-Before any part of a `.feapp` runs, the runner presents the user with a summary of what the app has declared:
+Before any part of a `.feapp` runs, the library presents the user with a summary of what the app has declared:
 
-- Network hosts the frontend may contact
-- Network hosts each worker may contact
-- Filesystem paths the stateful worker may access
-- Optional external services
+- Network addresses the frontend may contact
+- Network addresses the workers may contact
+- Configured network endpoints (user provides values)
 - Storage paths the app uses
 
-The user approves once. The runner enforces permanently.
+The user approves or rejects each permission individually. The library stores the decisions. The runner enforces the granted set.

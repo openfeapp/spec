@@ -78,6 +78,7 @@ Start with this spec to understand the format and runtime contract. Then read th
                     │  enforces permissions        │
                     │  injects feapp.* runtime     │
                     │  manages worker processes    │
+                    │  healthcheck enforcement     │
                     └──────────┬──────────┬────────┘
                                │          │
               ┌────────────────▼─┐      ┌─▼──────────────────┐
@@ -86,13 +87,17 @@ Start with this spec to understand the format and runtime contract. Then read th
               │  feapp.ipc        │      │   feapp.ipc         │
               │  feapp.stateless  │      │   feapp.schedule    │
               │  feapp.worker     │      │   feapp.sessions    │
-              │  feapp.app        │      │   feapp.fs          │
+              │  feapp.permissions│      │   feapp.permissions │
+              │  feapp.app        │      │   feapp.app         │
               └──────────────────┘      │   feapp.log         │
-                        │               └─────────────────────┘
-              ┌─────────▼──────────┐
-              │  Stateless Worker  │
-              │  feapp.storage (r) │
+                        │               │   WebSocket client  │
+              ┌─────────▼──────────┐    │   WASM              │
+              │  Stateless Worker  │    └─────────────────────┘
+              │  feapp.storage     │
+              │  feapp.permissions │
+              │  feapp.app         │
               │  feapp.log         │
+              │  WASM              │
               └────────────────────┘
 ```
 

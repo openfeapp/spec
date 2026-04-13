@@ -96,7 +96,7 @@ Defines the message envelope format for the IPC channel between the frontend and
   "feapp_wire": "0.1",
   "type": "...",
   "correlation_id": "uuid",
-  "session_id": "uuid | null",
+  "session_id": "uuid",
   "event": "event-name",
   "fn": "function-name",
   "payload": {}
@@ -111,7 +111,7 @@ Defines the message envelope format for the IPC channel between the frontend and
 
 `correlation_id` — UUID. Matches `ipc.ack`, `ipc.error`, `stateless.result`, and `stateless.error` back to their originating message. Internal to the runtime — the developer never reads or sets this.
 
-`session_id` — UUID assigned by the runner when a frontend session is established. Stable for the lifetime of that connection. Used to route `ipc.sendTo` and `event.reply()`. Null for external stateless invocations (webhooks).
+`session_id` — UUID assigned by the runner when a frontend session is established. Stable for the lifetime of that connection. Used to route `ipc.sendTo` and `event.reply()`. Always present — stateless functions are only invoked from frontend sessions.
 
 `event` — event name for IPC messages. Not used for stateless messages.
 
