@@ -1,0 +1,10 @@
+{
+  "$schema": "https://raw.githubusercontent.com/openfeapp/web-compat/main/schemas/compat.requirements.v1.schema.json",
+  "format": "compat-requirements/v1",
+  "requirements": [
+    "bcd:html.elements.dialog",
+    "bcd:html.elements.details",
+    "bcd:html.elements.template",
+    "bcd:html.elements.slot"
+  ]
+}

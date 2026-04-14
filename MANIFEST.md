@@ -27,6 +27,7 @@ A JSON file named `feapp.json` at the root of the `.feapp` archive.
   },
   "frontend": {
     "entry": "index.html",
+    "compat_lock": "compat.lock.json",
     "network": {
       "allowed": []
     }
@@ -54,7 +55,7 @@ A JSON file named `feapp.json` at the root of the `.feapp` archive.
   },
   "frontend": {
     "entry": "index.html",
-    "required_apis": ["indexeddb", "web-crypto", "service-workers"],
+    "compat_lock": "compat.lock.json",
     "network": {
       "allowed": ["https://cdn.example.com"]
     }
@@ -111,6 +112,7 @@ A JSON file named `feapp.json` at the root of the `.feapp` archive.
   },
   "frontend": {
     "entry": "index.html",
+    "compat_lock": "compat.lock.json",
     "network": {
       "allowed": []
     }
@@ -216,18 +218,25 @@ Signing is not part of this spec. Ecosystems that implement signing extend the `
 
 Path to the entry HTML file inside the `.feapp` archive. Typically `index.html`.
 
-#### `frontend.required_apis`
+#### `frontend.compat_lock`
 
-**Type:** array of strings
-**Required:** no
-**Default:** empty array
+**Type:** string
+**Required:** yes
 
-> **STUB** — The registry or standard used to define valid API identifier strings is not yet resolved. See TODOS.md item 1.
+Path to a compatibility lockfile inside the `.feapp` archive. The lockfile is a self-describing artifact generated at packaging time. The developer does not write it by hand — the CLI generates it automatically.
 
-Web platform APIs the frontend requires. The runner checks availability before launching and warns the user if an API is unavailable in the current webview. This is the time-capsule field for the frontend — a runner built in the future uses this to know what environment to provide.
+The generation workflow:
+
+1. `@openfeapp/web-compat-findings` scans the app's built frontend assets and emits a `compat-findings/v1` artifact. The scanner discovers JS, CSS, and HTML files, extracts usage signals, and maps them to canonical BCD compatibility keys with concrete evidence.
+2. `compat-generate-lock` from `@openfeapp/web-compat` combines the scanner findings with the spec's floor requirements (see [Frontend platform floor](#frontend-platform-floor)) to produce a `compat-lock/v1` artifact. App requirements already satisfied by the floor are omitted — the lockfile captures only the delta above the floor.
+3. The lockfile is embedded in the `.feapp` archive at the path declared here.
+
+The runner reads the `format` field of the referenced file to determine how to resolve it. If the runner recognizes the format, it resolves against its own webview engine and version and warns the user if any required API is unavailable. If the runner does not recognize the format, it must refuse to launch and tell the user which format version is required.
+
+The feapp spec does not define the lockfile format. The format is owned by its own specification. The current recommended format is `compat-lock/v1` ([openfeapp/web-compat](https://github.com/openfeapp/web-compat)).
 
 ```json
-"required_apis": ["indexeddb", "web-crypto", "service-workers"]
+"compat_lock": "compat.lock.json"
 ```
 
 #### `frontend.network`
@@ -395,6 +404,77 @@ The current version of the app's data schema. When a new version declares a high
 `update_feed` — URL to a feed the library polls for new versions. The format of the feed is defined by the ecosystem, not this spec.
 
 `license` — `"one-time"`, `"free"`, or `"open-source"`. Informs the library how to present the app.
+
+---
+
+## Frontend Platform Floor
+
+Each spec version defines a frontend platform floor — the minimum web platform surface that every conformant runner must guarantee in its webview environment. The floor is tied to the spec version and never changes after publication. A new spec version may raise the floor but must not shrink it — the floor is monotonic across spec versions. The floor for version N is always a subset of the floor for version N+1.
+
+The floor for feapp is defined by the `compat-requirements/v1` files in `floor/` of the spec repository:
+
+```
+floor.language.requirements.json    ES2022 language built-ins
+floor.api.requirements.json         Web platform APIs
+floor.html.requirements.json        HTML elements
+floor.css.requirements.json         CSS features
+```
+
+These files are machine-readable and consumable by `@openfeapp/web-compat` tooling. They are the normative definition. The summary below is informational.
+
+### ES2022 language level
+
+The runner's webview must support ES2022 without transpilation. This includes top-level `await`, public and private class fields, private methods, `Array.prototype.at()`, `Object.hasOwn()`, `Error.cause`, and the RegExp `d` flag (`hasIndices`).
+
+### Web platform APIs
+
+Storage and data: IndexedDB, `localStorage`, `sessionStorage`, Cache API, Origin Private File System (OPFS via `navigator.storage.getDirectory()`), `structuredClone`.
+
+Network: `fetch`, `AbortController`, `AbortSignal`, `URL`, `URLSearchParams`, `Headers`, `Request`, `Response`, `FormData`, `WebSocket`.
+
+Streams: `ReadableStream`, `WritableStream`, `TransformStream`.
+
+Encoding: `TextEncoder`, `TextDecoder`.
+
+Crypto: `SubtleCrypto` (via `crypto.subtle`).
+
+Observers: `ResizeObserver`, `IntersectionObserver`, `MutationObserver`.
+
+Scheduling: `queueMicrotask`.
+
+Binary: `Blob`, `File`, `FileReader`.
+
+DOM: `CustomEvent`, `EventTarget`, `CSS.supports()`.
+
+Canvas and media: `HTMLCanvasElement`, `CanvasRenderingContext2D`, `matchMedia`.
+
+Performance: `Performance.now()`, `PerformanceObserver`.
+
+Clipboard: `navigator.clipboard` (Clipboard API).
+
+Animation: Web Animations API (`Element.animate()`, `Animation`).
+
+### HTML elements
+
+`<dialog>`, `<details>`, `<template>`, `<slot>`.
+
+### CSS features
+
+Custom properties (`var()`), Grid, Flexbox `gap`, `aspect-ratio`, `clamp()`, `min()`, `max()`, `:is()`, `:where()`, `scroll-behavior`, logical properties (`margin-inline`, etc.).
+
+### Derived browser floors
+
+The minimum browser versions implied by this floor (informational, derived from BCD):
+
+```
+Chrome ≥ 98
+Firefox ≥ 111
+Safari ≥ 16
+```
+
+### How the floor interacts with the lockfile
+
+The feapp CLI automatically includes the spec's floor requirements when generating the lockfile. App requirements already satisfied by the floor are omitted from the lockfile's top-level `requirements` list — the lockfile captures only the delta above the floor. A minimal app that uses nothing beyond the floor still has a lockfile; it simply has an empty `requirements` list.
 
 ---
 

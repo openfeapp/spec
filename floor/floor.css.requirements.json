@@ -1,0 +1,17 @@
+{
+  "$schema": "https://raw.githubusercontent.com/openfeapp/web-compat/main/schemas/compat.requirements.v1.schema.json",
+  "format": "compat-requirements/v1",
+  "requirements": [
+    "bcd:css.properties.custom-property",
+    "bcd:css.properties.grid",
+    "bcd:css.properties.gap.flex_context",
+    "bcd:css.properties.aspect-ratio",
+    "bcd:css.types.clamp",
+    "bcd:css.types.min",
+    "bcd:css.types.max",
+    "bcd:css.selectors.is",
+    "bcd:css.selectors.where",
+    "bcd:css.properties.scroll-behavior",
+    "bcd:css.properties.margin-inline"
+  ]
+}

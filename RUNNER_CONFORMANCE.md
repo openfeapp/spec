@@ -23,6 +23,33 @@ This document is the implementor's view of API.md. The behavioral contracts are 
 
 The library presents all permissions declared in the manifest to the user as a checklist on first run. The user approves or rejects each permission individually. The library stores these decisions.
 
+---
+
+## Compatibility lockfile
+
+The manifest declares `frontend.compat_lock` (required). The runner must read the referenced file from the archive before launching the frontend.
+
+```
+1. Read the file at the compat_lock path
+2. Read the format field
+3. If the format is recognized: resolve against the runner's own webview engine and version
+4. If the format is not recognized: refuse to launch, tell the user which format is required
+```
+
+Resolution behavior when the format is recognized:
+
+```
+state = exact or conservative    launch normally
+state = unsatisfied              warn the user which APIs are unavailable
+                                 the user may choose to launch anyway
+state = unresolved               warn the user that some API support could not be verified
+                                 the user may choose to launch anyway
+```
+
+The runner must not silently skip a lockfile it cannot parse. A malformed lockfile is a hard error — refuse to launch.
+
+The runner must not modify the lockfile. The lockfile is a build artifact, not a runtime artifact.
+
 On subsequent runs, the library re-presents only if the manifest declares permissions that are not in the stored decisions (e.g., after a version upgrade).
 
 The runner does not present permissions. The runner receives the granted set from the library and enforces it.
@@ -58,6 +85,20 @@ The frontend must be iframe-compatible for cloud runner embedding:
 - Must not set `X-Frame-Options: DENY` or `SAMEORIGIN`
 - Must not contain framebusting scripts
 - `Content-Security-Policy frame-ancestors` must permit the runner origin
+
+---
+
+## Frontend platform floor
+
+The runner's webview environment must satisfy the frontend platform floor defined for the spec version it supports. The floor is defined by `compat-requirements/v1` files published in the spec repository under `floor/`.
+
+For feapp 0.1, this means the webview must support ES2022 language features and a baseline set of web platform APIs, HTML elements, and CSS features. The complete normative list is in the floor requirement files. See MANIFEST.md § Frontend Platform Floor for a prose summary.
+
+The floor is monotonic across spec versions. A future spec version may add requirements to the floor but must not remove any. The floor for version N is always a subset of the floor for version N+1. This guarantees that a runner supporting a newer spec version also satisfies every older floor.
+
+The floor is not checked at runtime — it is a structural guarantee the runner makes by virtue of supporting a spec version. A runner that claims to support feapp 0.1 must provide a webview that satisfies the feapp 0.1 floor. If the runner's webview cannot satisfy the floor, the runner must not claim support for that spec version.
+
+The compatibility lockfile handles requirements above the floor. The floor requirements are embedded in the lockfile at generation time and always participate in resolution, but a runner that already satisfies the floor will always pass those requirements.
 
 ---
 
@@ -250,9 +291,13 @@ Allow cross-profile communication or storage access
 Run a stateful worker when storage authority belongs to another host
 Grant permissions the user has not approved — the runner enforces only what the library passes
 Attempt to run an app whose spec version it does not support
+Claim support for a spec version whose frontend platform floor its webview cannot satisfy
 Persist profile context beyond the current session
 Start a stateful worker before storage is confirmed connected
 Allow module-level state to leak between stateless invocations
 Use a restart backoff schedule other than the one specified
 Silently discard console.log output from workers
+Launch a frontend without reading and resolving the compatibility lockfile
+Silently skip or ignore a compatibility lockfile it cannot parse
+Modify the compatibility lockfile at runtime
 ```

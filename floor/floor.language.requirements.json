@@ -1,0 +1,14 @@
+{
+  "$schema": "https://raw.githubusercontent.com/openfeapp/web-compat/main/schemas/compat.requirements.v1.schema.json",
+  "format": "compat-requirements/v1",
+  "requirements": [
+    "bcd:javascript.operators.await.top_level",
+    "bcd:javascript.classes.public_class_fields",
+    "bcd:javascript.classes.private_class_fields",
+    "bcd:javascript.classes.private_class_methods",
+    "bcd:javascript.builtins.Array.at",
+    "bcd:javascript.builtins.Object.hasOwn",
+    "bcd:javascript.builtins.Error.cause",
+    "bcd:javascript.builtins.RegExp.hasIndices"
+  ]
+}
