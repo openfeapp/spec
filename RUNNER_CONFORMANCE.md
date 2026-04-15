@@ -1,10 +1,6 @@
 # Runner Conformance
 
-A runner is a stateless executor. It receives a `.feapp` file and profile context, and executes the app. It owns no persistent state.
-
-```
-(profile context + .feapp file) → running app
-```
+A runner is anything that executes a `.feapp` file. The feapp spec defines runner requirements in implementation-agnostic terms — it does not prescribe architecture, transport, or hosting model. The cloud library is the concrete runner implementation and must satisfy every requirement in this document.
 
 This document is the implementor's view of API.md. The behavioral contracts are defined in API.md. This document specifies what a runner must do to satisfy those contracts.
 
@@ -126,6 +122,18 @@ A runner that cannot provide a persistent stateful worker process must refuse to
 
 ---
 
+## Memory limits
+
+The runner must expose a library-configurable memory ceiling for each worker type — stateful and stateless independently. The default ceiling is implementation-defined but must be documented by the runner implementation.
+
+**Stateless pre-loading:** If the runner pre-loads stateless module contexts for performance, the memory ceiling applies per invocation context. A runner hosting N concurrent stateless contexts must budget at most N × ceiling bytes for the stateless worker pool.
+
+**On OOM — stateless worker:** Kill the invocation. Return `feapp.stateless.ExecutionError` to the caller. OOM is treated as a crash — no distinct error type.
+
+**On OOM — stateful worker:** Kill the worker process. Initiate restart with backoff (see Restart Policy). OOM is treated as a crash — indistinguishable from any other unexpected termination from the runner's perspective.
+
+---
+
 ## Worker environment guarantees
 
 The worker execution environment must expose:
@@ -209,6 +217,18 @@ Enforcement mechanism is implementation-defined (V8 isolate, prelude script, cus
 
 ---
 
+## Service worker
+
+The runner owns the service worker for the frontend webview. The service worker is runner-managed and is the mechanism through which the runner provides offline caching of frontend assets and `feapp.storage` reads on cloud deployments.
+
+**Apps may not provide a custom service worker.** A `.feapp` archive that includes a service worker file must be rejected by the CLI at packaging time. The manifest has no field to disable or override the runner's service worker.
+
+The reason is scope: a custom service worker would have unscoped fetch interception access over the webview origin, bypassing the runner's network enforcement and Content-Security-Policy. The sandbox model depends on the runner controlling this layer entirely.
+
+Developers who need request interception logic for the frontend should implement it in the stateful worker and route through `feapp.ipc`.
+
+---
+
 ## Browser storage namespacing
 
 The runner wraps all browser storage APIs and enforces namespacing by app ID and profile. The developer uses browser storage normally. All keys, store names, database names, and cookie names are prefixed transparently.
@@ -240,7 +260,9 @@ A runner that cannot enforce profile isolation must refuse to run multiple profi
 
 ## Profile context
 
-The runner receives profile context from the library via the B1 wire contract (see WIRE.md). The runner uses this context to configure storage namespacing, worker endpoints, and runtime injection. The worker never sees raw profile context.
+The runner receives profile context before launching any component. The profile context contains the resolved remoteStorage endpoint, bearer token, storage namespace, worker endpoints, and profile identity. The mechanism by which the runner receives this context is implementation-defined.
+
+The runner uses profile context to configure storage namespacing, inject worker endpoint URLs and auth into the frontend runtime, and configure worker process credentials. The worker never sees raw profile context. The runner applies it transparently.
 
 The runner must not persist profile context beyond the current session.
 
@@ -248,9 +270,7 @@ The runner must not persist profile context beyond the current session.
 
 ## Storage authority
 
-The stateful worker must always run on the same host as the remoteStorage server it writes to. This prevents split-brain writes from multiple worker instances.
-
-If the active remoteStorage server is external (not local), the runner must not start a local stateful worker. Refuse with a clear error.
+The stateful worker must always run on the same host as the remoteStorage server it writes to. This prevents split-brain writes from multiple worker instances. A runner must not start a stateful worker unless it can guarantee co-location with the authoritative remoteStorage server for that profile.
 
 ---
 

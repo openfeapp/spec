@@ -454,6 +454,8 @@ Clipboard: `navigator.clipboard` (Clipboard API).
 
 Animation: Web Animations API (`Element.animate()`, `Animation`).
 
+WebAssembly: `WebAssembly` global object and core API (`Module`, `Instance`, `Memory`, `Table`, `compile`, `instantiate`).
+
 ### HTML elements
 
 `<dialog>`, `<details>`, `<template>`, `<slot>`.

@@ -42,6 +42,7 @@
     "bcd:api.PerformanceObserver",
     "bcd:api.Clipboard",
     "bcd:api.Element.animate",
-    "bcd:api.Animation"
+    "bcd:api.Animation",
+    "bcd:webassembly.api"
   ]
 }

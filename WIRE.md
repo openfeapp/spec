@@ -1,85 +1,66 @@
 # Wire Contracts
 
-This document defines the wire contracts required for two independently written implementations to interoperate. Each contract is versioned independently from the feapp spec version.
+This document defines the protocol contracts the cloud library implementation must satisfy. These are design contracts for the ecosystem — not interop specifications for independent vendors. The feapp spec and the cloud library are designed together. The only genuine external interop boundary is B4, where `feapp.storage` meets the remoteStorage protocol implemented by independently operated storage servers.
 
-**Exact version match required.** Two components must declare the same wire contract version to communicate. No compatibility assumptions. No best-effort mode. This applies without exception, especially before v1.0.
+**Exact version match required within B3.** Both sides of the IPC channel must speak the same `feapp_wire_ipc` version. No compatibility assumptions. No best-effort mode. This applies without exception, especially before v1.0.
 
 ---
 
 ## Contract index
 
 ```
-B1  Library → Runner              launch protocol
-                                  how the library spawns the runner
-                                  how profile context is passed
-
 B3  Frontend ↔ Stateful Worker    IPC channel
+                                  WebSocket transport
                                   message envelope format
                                   delivery acknowledgment
                                   session routing
 
-B4  Any actor ↔ remoteStorage     inherited protocol
+B4  Any actor ↔ remoteStorage     external protocol
+                                  the one genuine interop boundary
                                   not defined here — referenced
 ```
 
-B2 (Desktop Library ↔ Cloud Library) is defined in the [ecosystem spec](https://github.com/openfeapp/ecosystem-spec/blob/main/WIRE.md). It is an ecosystem-level contract, not a `.feapp` format concern.
+B1 (runner launch protocol) is internal to each cloud library distribution. Not a protocol contract — not defined here.
 
----
-
-## B1 — Library → Runner Launch Protocol
-
-The library spawns the runner as a subprocess and passes profile context to it. The runner never calls the library.
-
-### Wire contract version
-
-> **STUB** — Wire contract versioning mechanism not yet specified. See TODOS.md item 11.
-
-### Launch invocation
-
-```
-feapp-runner [options] <path-to-feapp-file>
-```
-
-> **STUB** — The exact CLI argument format and option set are not yet confirmed. The transport for profile context (stdin JSON proposed) needs confirmation. See TODOS.md item 4.
-
-### Profile context
-
-The profile context passed from library to runner contains:
-
-```json
-{
-  "feapp_wire": "0.1",
-  "app_id": "com.developer.feedreader",
-  "app_version": "1.0.0",
-  "storage_endpoint": "https://storage.example.com",
-  "storage_token": "bearer-token",
-  "worker_endpoint": "wss://worker.example.com/stateful",
-  "stateless_endpoint": "https://worker.example.com/stateless",
-  "storage_namespace": "/feedreader/",
-  "profile_id": "opaque-profile-identifier"
-}
-```
-
-The runner uses these values to:
-- Construct all storage path namespacing
-- Inject worker endpoint URLs and auth into the frontend runtime
-- Configure worker process credentials
-
-The worker never receives raw profile context. The runner applies it transparently.
-
-### Version mismatch behavior
-
-If the runner does not support the declared `feapp_wire` version, it must exit with a non-zero code and write a human-readable error to stderr explaining which wire version is required.
+B2 (Desktop shell ↔ Cloud library) is defined in the ecosystem spec WIRE.md. Not a `.feapp` format concern.
 
 ---
 
 ## B3 — Frontend ↔ Stateful Worker IPC Channel
 
-Defines the message envelope format for the IPC channel between the frontend and the stateful worker. The transport mechanism is implementation-defined.
+Defines the WebSocket-based IPC channel between the frontend and the stateful worker. Both sides of this channel are implemented by the cloud library — the cloud library injects the frontend runtime and runs the stateful worker. The protocol is prescribed here so it can be versioned and evolved deliberately as the spec develops.
 
-### Wire contract version
+### Transport
 
-> **STUB** — Wire contract versioning mechanism not yet specified. See TODOS.md item 11.
+The cloud library exposes a WebSocket upgrade endpoint at a well-known path on the app's subdomain-isolated origin:
+
+```
+/feapp/stateful/ws
+```
+
+The frontend runtime connects to this endpoint at launch. The cloud library injects the full endpoint URL into the frontend runtime — the developer never constructs or handles it directly.
+
+### Session establishment
+
+On WebSocket open, the frontend runtime sends:
+
+```json
+{
+  "feapp_wire_ipc": "0.1",
+  "type": "session.hello",
+  "session_id": "uuid"
+}
+```
+
+`session_id` is assigned by the cloud library and injected into the frontend runtime at launch. The cloud library responds with `session.ready` on success, or closes the connection immediately if the `feapp_wire_ipc` version is not supported.
+
+```json
+{
+  "feapp_wire_ipc": "0.1",
+  "type": "session.ready",
+  "session_id": "uuid"
+}
+```
 
 ### Delivery model
 
@@ -93,7 +74,7 @@ Defines the message envelope format for the IPC channel between the frontend and
 
 ```json
 {
-  "feapp_wire": "0.1",
+  "feapp_wire_ipc": "0.1",
   "type": "...",
   "correlation_id": "uuid",
   "session_id": "uuid",
@@ -105,13 +86,13 @@ Defines the message envelope format for the IPC channel between the frontend and
 
 **Fields:**
 
-`feapp_wire` — wire contract version. Both sides must agree before exchanging messages.
+`feapp_wire_ipc` — B3 protocol version. Validated on every message, not only at session establishment. If either side receives a message with an unsupported version, it must close the connection immediately and surface a clear error.
 
 `type` — one of the message types below.
 
 `correlation_id` — UUID. Matches `ipc.ack`, `ipc.error`, `stateless.result`, and `stateless.error` back to their originating message. Internal to the runtime — the developer never reads or sets this.
 
-`session_id` — UUID assigned by the runner when a frontend session is established. Stable for the lifetime of that connection. Used to route `ipc.sendTo` and `event.reply()`. Always present — stateless functions are only invoked from frontend sessions.
+`session_id` — UUID assigned by the cloud library at session establishment. Stable for the lifetime of that connection. Used to route `ipc.sendTo` and `event.reply()`. Always present — stateless functions are only invoked from frontend sessions.
 
 `event` — event name for IPC messages. Not used for stateless messages.
 
@@ -122,6 +103,13 @@ Defines the message envelope format for the IPC channel between the frontend and
 ### Message types
 
 ```
+session.hello       frontend → cloud library
+                    first message on WebSocket open
+                    declares feapp_wire_ipc version and session_id
+
+session.ready       cloud library → frontend
+                    acknowledges session establishment
+
 ipc.send            frontend → stateful worker
                     requires ipc.ack or ipc.error in response
 
@@ -151,36 +139,36 @@ stateless.error     stateless worker → frontend
                     carries same correlation_id as the invoke
 ```
 
-### Version mismatch behavior
-
-If either side receives a message with an unsupported `feapp_wire` version, it must close the connection immediately and surface a clear error.
-
 ---
 
 ## B4 — remoteStorage Protocol
 
-`feapp.storage` is backed by the remoteStorage protocol. This spec references the protocol rather than redefining it.
+`feapp.storage` is backed by the remoteStorage protocol. This is the one genuine external interop boundary — remoteStorage servers are independently operated and must conform to the published protocol. This spec references the protocol rather than redefining it.
 
-**Protocol:** remoteStorage (IETF draft, draft-dejong-remotestorage)
-
-> **STUB** — The specific draft revision this spec version targets is not yet pinned. This must be resolved before the spec is final. See TODOS.md item 5.
+**Protocol:** `draft-dejong-remotestorage-26`
 
 ### What feapp.storage maps to
 
 ```
-feapp.storage.get(path)                 →  GET {endpoint}{namespace}{path}
-feapp.storage.set(path, value)          →  PUT {endpoint}{namespace}{path}
-feapp.storage.set(..., {throwOnConflict})→ PUT with If-Match: {etag}
-feapp.storage.set(..., {throwIfExists}) →  PUT with If-None-Match: *
-feapp.storage.delete(path)              →  DELETE {endpoint}{namespace}{path}
-feapp.storage.list(path)                →  GET {endpoint}{namespace}{path}/
-feapp.storage.watch(path, handler)      →  runner polls or uses server-sent events
-                                           mechanism is implementation-defined
+feapp.storage.get(path)                  →  GET {endpoint}{namespace}{path}
+feapp.storage.set(path, value)           →  PUT {endpoint}{namespace}{path}
+feapp.storage.set(..., {throwOnConflict})→  PUT with If-Match: {etag}
+feapp.storage.set(..., {throwIfExists})  →  PUT with If-None-Match: *
+feapp.storage.delete(path)               →  DELETE {endpoint}{namespace}{path}
+feapp.storage.list(path)                 →  GET {endpoint}{namespace}{path}/
+feapp.storage.watch(path, handler)       →  runner polls or uses server-sent events
+                                            mechanism is implementation-defined
 ```
 
 The namespace prefix is injected by the runner from profile context. The developer writes to `/articles/123`. The runner translates to the fully qualified path before any operation.
 
-### ConflictError / ExistsError mapping
+### feapp.storage.quota()
+
+`quota()` has no mapping in `draft-dejong-remotestorage-26` — the protocol defines no quota query endpoint. The cloud library satisfies `quota()` through a sidecar extension it implements on top of remoteStorage. The sidecar is not part of the remoteStorage protocol and is not defined here — see ecosystem spec ARCHITECTURE.md § Storage Quota Extension.
+
+For external remoteStorage servers that do not implement the sidecar, `quota()` returns `{ used: -1, available: -1 }`. This is not an error.
+
+### Error mapping
 
 ```
 HTTP 412 Precondition Failed  →  feapp.storage.ConflictError
@@ -188,5 +176,6 @@ HTTP 404 (on If-Match)        →  feapp.storage.ConflictError
 HTTP 412 (on If-None-Match)   →  feapp.storage.ExistsError
 HTTP 429 Too Many Requests    →  feapp.storage.RateLimitError  (e.retryAfter from Retry-After header)
 HTTP 507 Insufficient Storage →  feapp.storage.StorageFullError
-server unreachable            →  feapp.storage.OfflineError
+server unreachable / timeout  →  feapp.storage.OfflineError
+unexpected response           →  feapp.storage.ServerError     (e.status: HTTP code or null)
 ```

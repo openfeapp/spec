@@ -79,28 +79,24 @@ There is no WebSocket support — invocations are short-lived and there is nothi
 
 **WebAssembly** is guaranteed in the stateless worker environment. Same healthcheck rules apply.
 
-STUB: stateless worker example needs revision for cases where summary is longer than the default 1m timeout
 ```javascript
 // Example: stateless worker
+// Good fit: bounded computation, reads config, returns quickly
 export async function summarize({ text, maxWords = 100 }) {
-  const data = await feapp.storage.get('/config/summarizer')
+  const config = await feapp.storage.get('/config/summarizer')
   // ... compute summary using config
   return { summary, wordCount }
 }
 
-export async function processWithAI({ prompt }) {
-  const config = feapp.permissions.configured('llm')
-  if (!config || config.endpoints.length === 0) {
-    throw new Error('No AI endpoint configured')
-  }
-  const response = await fetch(config.endpoints[0] + '/api/generate', {
-    method: 'POST',
-    body: JSON.stringify({ prompt })
-  })
-  const result = await response.json()
-  await feapp.storage.set(`/ai/results/${Date.now()}`, result)
-  return result
+// Good fit: format conversion, deterministic, fast
+export async function convertMarkdown({ source }) {
+  return { html: markdownToHtml(source) }
 }
+
+// Bad fit — do not do this:
+// AI API calls can take several minutes for long completions.
+// A stateless invocation has a 1-minute default timeout.
+// Use the stateful worker for AI calls. See feapp.stateless § Long-running work.
 ```
 
 ---
@@ -158,12 +154,12 @@ Browser storage (IndexedDB, localStorage, sessionStorage, cookies, Cache API, OP
 // Read a value. Returns null if path does not exist.
 const value = await feapp.storage.get(path)
 
-// Write a value.
+// Write a value. Value must be JSON round-trip safe — see Serialization below.
 await feapp.storage.set(path, value)
 await feapp.storage.set(path, value, { throwOnConflict: true })
 await feapp.storage.set(path, value, { throwIfExists: true })
 
-// Delete a value.
+// Delete a value. Silent no-op if the path does not exist.
 await feapp.storage.delete(path)
 await feapp.storage.delete(path, { throwOnConflict: true })
 
@@ -174,7 +170,20 @@ const all = await feapp.storage.list(path, { recursive: true })
 // Watch a path for changes.
 const unwatch = feapp.storage.watch(path, handler)
 unwatch()
+
+// Query storage quota. Values are in bytes. -1 means the server did not report that value.
+const { used, available } = await feapp.storage.quota()
 ```
+
+### Serialization
+
+Values passed to `set()` must be **JSON round-trip safe**: `JSON.parse(JSON.stringify(value))` must deep-equal the original. If it would not — because the value contains a circular reference, class instance, `Date`, `Map`, `Set`, `undefined` as an object value, `NaN`, `Infinity`, or any other non-JSON type — `set()` throws `feapp.storage.SerializationError` before any network request is made.
+
+`JSON.stringify` does not throw on `NaN`, `Infinity`, or `undefined`-in-objects — it silently coerces them (`null`, `null`, key dropped). The runner must detect these cases and treat them as `SerializationError`. Silent coercion is not permitted.
+
+Permitted types at every level of the value tree: `string`, `number` (finite, non-NaN), `boolean`, `null`, plain object (all values must also be permitted types), array (all elements must also be permitted types).
+
+Malformed paths (not starting with `/`, containing null bytes, etc.) throw `TypeError` — they are developer mistakes, not runtime conditions. Paths outside the app's declared `storage.paths` throw `feapp.storage.PermissionError`.
 
 ### Watch handler
 
@@ -276,14 +285,36 @@ const ids = await feapp.storage.list('/articles/')
 // Bad — separate index file that must be kept in sync
 await feapp.storage.set('/article-index', [123, 456])
 
-// Good — SQLite blob for transactional consistency
+// Illustrative — SQLite WASM blob for transactional consistency
+// This is one valid pattern, not a spec recommendation.
+// Any approach that produces a JSON round-trip-safe value is valid.
+//
+// db.export() returns Uint8Array (binary). Binary must be base64-encoded
+// before storing — feapp.storage values must be JSON round-trip safe.
 const raw = await feapp.storage.get('/myapp/db')
-const db = raw ? new SQL.Database(raw) : new SQL.Database()
+const bytes = raw ? Uint8Array.from(atob(raw), c => c.charCodeAt(0)) : null
+const db = bytes ? new SQL.Database(bytes) : new SQL.Database()
 db.run('BEGIN')
 // ... transactional operations
 db.run('COMMIT')
-await feapp.storage.set('/myapp/db', db.export(), { throwOnConflict: true })
+const exported = db.export()  // Uint8Array
+const encoded = btoa(String.fromCharCode(...exported))  // base64 string
+await feapp.storage.set('/myapp/db', encoded, { throwOnConflict: true })
 ```
+
+### quota()
+
+Returns the storage quota as reported by the storage server.
+
+```javascript
+const { used, available } = await feapp.storage.quota()
+// used:      bytes currently consumed, or -1 if server did not report it
+// available: bytes remaining, or -1 if server did not report it
+```
+
+`-1` means the server did not report that value — it is not an error. External remoteStorage servers that do not implement the quota extension always return `-1` for both fields. The app should treat `-1` as "unknown" and not display a quota indicator in that case.
+
+`quota()` throws `feapp.storage.OfflineError` if the server is unreachable.
 
 ### Access by actor
 
@@ -298,24 +329,40 @@ All actors have full read and write access to `feapp.storage`. Concurrent writes
 ### Error reference
 
 ```javascript
-feapp.storage.ConflictError     // ETag mismatch — another writer committed first
-                                // only thrown when throwOnConflict: true
-                                // default is last-write-wins
+feapp.storage.ConflictError      // ETag mismatch — another writer committed first
+                                 // only thrown when throwOnConflict: true
+                                 // default is last-write-wins
 
-feapp.storage.ExistsError       // path already has a value
-                                // only thrown when throwIfExists: true
+feapp.storage.ExistsError        // path already has a value
+                                 // only thrown when throwIfExists: true
 
-feapp.storage.OfflineError      // remoteStorage server unreachable
-                                // fires regardless of topology when server is down
+feapp.storage.SerializationError // value passed to set() is not JSON round-trip safe
+                                 // thrown before any network request is made
+                                 // covers: circular refs, class instances, Date, Map, Set,
+                                 //         NaN, Infinity, undefined as an object value
 
-feapp.storage.PermissionError   // path outside declared manifest permissions
-                                // or operation not permitted for this actor
+feapp.storage.OfflineError       // server unreachable or timed out
+                                 // any failure to complete an operation due to server
+                                 // unavailability — instant refusal and slow timeouts
+                                 // both resolve to this error; recovery is the same
 
-feapp.storage.RateLimitError    // server returned 429
-  e.retryAfter                  // seconds until retry is safe
+feapp.storage.PermissionError    // path outside declared manifest permissions
+                                 // or operation not permitted for this actor
 
-feapp.storage.StorageFullError  // server returned 507
+feapp.storage.RateLimitError     // server returned 429
+  e.retryAfter                   // seconds until retry is safe
+
+feapp.storage.StorageFullError   // server returned 507 — only thrown by set()
+  e.used                         // bytes used, if server reported it (-1 if not)
+  e.total                        // total quota in bytes, if server reported it (-1 if not)
+
+feapp.storage.ServerError        // server returned an unexpected response
+  e.status                       // HTTP status code (number), or null if response was malformed
 ```
+
+`delete()` on a path that does not exist is a silent no-op — it does not throw.
+
+`StorageFullError` is only thrown by `set()`. `get()`, `delete()`, `list()`, and `watch()` do not write data and will not trigger a 507.
 
 ---
 
@@ -345,9 +392,23 @@ feapp.ipc.on(event, (event) => {
 feapp.ipc.reconnect()
 ```
 
-`feapp.ipc.send()` throws if the stateful worker status is not `'running'`. Catch the error and check `feapp.worker.stateful.status` to determine the cause.
+`feapp.ipc.send()` throws `feapp.ipc.IPCError` if delivery fails. Check `feapp.worker.stateful.status` to determine the broader cause.
 
-> **STUB** — The error type thrown on delivery failure is not yet named. See TODOS.md item 13.
+```javascript
+try {
+  await feapp.ipc.send('sync', payload)
+} catch (e) {
+  if (e instanceof feapp.ipc.IPCError) {
+    // e.reason:
+    // 'unreachable'    — worker was not in 'running' status when send() was called
+    // 'timeout'        — message was sent but ack never arrived before channel died
+    // 'session-closed' — session dropped while the send was in flight
+    console.error(e.reason)
+  }
+}
+```
+
+All IPC errors extend `feapp.ipc.Error` for catch-all handling. Recovery in all cases is the same: check `feapp.worker.stateful.status` and call `feapp.ipc.reconnect()` when the worker is available again.
 
 ### Stateful worker side
 
@@ -512,12 +573,50 @@ If a function does not return within the timeout, the runner kills the invocatio
 
 ### Long-running work belongs in the stateful worker
 
-If a task takes longer than the stateless timeout — syncing a large dataset, processing a backlog of records, running a multi-step AI pipeline, batch-importing paginated API results — it belongs in the stateful worker. The pattern:
+If a task may take longer than the stateless timeout, it belongs in the stateful worker. The canonical case is an AI API call — a long completion from an external LLM can easily run several minutes, silently hitting `TimeoutError` with no recovery path for the user if invoked from stateless.
 
-1. Frontend sends a "start job" message over `feapp.ipc`
-2. Stateful worker runs the job, writing progress to `feapp.storage` (e.g., `/jobs/{id}/progress`)
-3. Frontend watches the progress path via `feapp.storage.watch()` and renders a progress bar
-4. Stateful worker writes the final result and broadcasts completion over IPC
+The pattern for any long-running job:
+
+**Stateless worker** (`stateless.js`) — only for fast, bounded work:
+```javascript
+// Fine in stateless: fast, bounded, deterministic
+export async function summarize({ text, maxWords = 100 }) {
+  const config = await feapp.storage.get('/config/summarizer')
+  return { summary: computeSummary(text, config, maxWords) }
+}
+```
+
+**Stateful worker** (`stateful.js`) — owns all long-running and async work:
+```javascript
+feapp.ipc.on('ai-generate', async ({ sessionId, jobId, prompt }) => {
+  await feapp.storage.set(`/jobs/${jobId}`, { status: 'running', progress: 0 })
+
+  const config = feapp.permissions.configured('llm')
+  const response = await fetch(config.endpoints[0] + '/api/generate', {
+    method: 'POST',
+    body: JSON.stringify({ prompt })
+  })
+  const result = await response.json()
+
+  await feapp.storage.set(`/jobs/${jobId}`, { status: 'done', result })
+  feapp.ipc.sendTo(sessionId, 'ai-done', { jobId })
+})
+```
+
+**Frontend** — kicks off the job and watches for completion:
+```javascript
+const jobId = crypto.randomUUID()
+await feapp.ipc.send('ai-generate', { jobId, prompt })
+
+const unwatch = feapp.storage.watch(`/jobs/${jobId}`, ({ newValue }) => {
+  if (newValue?.status === 'done') {
+    unwatch()
+    renderResult(newValue.result)
+  }
+})
+```
+
+The stateful worker runs the job unbounded. The frontend watches storage for completion. Progress updates are optional — write intermediate values to `/jobs/${jobId}/progress` and watch that path for a live progress bar.
 
 ### Error model
 
@@ -559,9 +658,7 @@ feapp.schedule.every(interval, fn, options)
 
 `every()` requires a persistent process between invocations — something must remain running to measure the gap and trigger the next invocation. Runners that cannot provide a persistent stateful worker process cannot implement `every()`. Such runners must refuse to open any `.feapp` file that declares a stateful worker, the same as refusing an unsupported spec version.
 
-`interval` — string duration: `'1s'`, `'30s'`, `'5m'`, `'1h'`, `'1d'`.
-
-> **STUB** — Minimum interval value (e.g. 1s) not yet confirmed. See TODOS.md item 7.
+`interval` — string duration: `'1s'`, `'30s'`, `'5m'`, `'1h'`, `'1d'`. Minimum interval is **1 second**. The CLI rejects any value below `'1s'` as an error. Sub-second recurring work belongs in `setInterval`, not `feapp.schedule.every()`.
 
 `options.timeout` — string duration. Strongly recommended. Protects the schedule from stalled async operations — a callback that awaits a hung `fetch()` or an unresponsive WebSocket will never return, silently stopping the schedule. When the timeout fires, the runner cancels that specific callback invocation (not the worker process), logs via `feapp.log.error`, and allows the next scheduled invocation to proceed normally. The CLI emits a warning if `timeout` is absent.
 
