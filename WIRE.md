@@ -1,6 +1,10 @@
 # Wire Contracts
 
-This document defines the protocol contracts the cloud library implementation must satisfy. These are design contracts for the ecosystem — not interop specifications for independent vendors. The feapp spec and the cloud library are designed together. The only genuine external interop boundary is B4, where `feapp.storage` meets the remoteStorage protocol implemented by independently operated storage servers.
+This document defines the wire contracts that runner implementations must satisfy.
+B3 is a runner requirement — both sides of the IPC channel are implemented by the
+cloud library, but the contract is defined here so it can be versioned and evolved
+as part of the spec. B4 is the one genuine external interop boundary, where
+`feapp.storage` meets independently operated remoteStorage servers.
 
 **Exact version match required within B3.** Both sides of the IPC channel must speak the same `feapp_wire_ipc` version. No compatibility assumptions. No best-effort mode. This applies without exception, especially before v1.0.
 

@@ -17,6 +17,7 @@ Each API namespace is available to specific actors. Calling a namespace not avai
 | [feapp.stateless](#feappstateless) | invoke | — | exports |
 | [feapp.schedule](#feappschedule) | — | full access | — |
 | [feapp.permissions](#feapppermissions) | read-only | read-only | read-only |
+| [feapp.notify](#feappnotify) | — | full access | — |
 | [feapp.log](#feapplog) | — | full access | full access |
 | [feapp.app](#feappapp) | full access | full access | full access |
 
@@ -760,14 +761,20 @@ feapp.permissions.query(permission)
 // 'denied'  — the user rejected this permission, or it was not declared in the manifest
 ```
 
-`permission` is a string in the format `type:value`:
+`permission` is a string identifying the permission to check. Two formats:
+
+**Address permissions** — `type:value`, where `type` is `network` and `value` is the address as declared in the manifest:
 
 ```javascript
 feapp.permissions.query('network:https://api.example.com')  // 'granted'
 feapp.permissions.query('network:http://localhost:11434')    // 'denied'
 ```
 
-The permission string format is `{type}:{value}` where `type` is `network` and `value` is the address as declared in the manifest.
+**Boolean permissions** — type name only, no value component:
+
+```javascript
+feapp.permissions.query('notifications')  // 'granted' | 'denied'
+```
 
 ### Listing granted permissions
 
@@ -847,3 +854,48 @@ export async function callAI({ prompt }) {
 ```
 
 The app never prompts the user for permissions directly. Permission management happens in the library UI. The app reads the current state and adapts.
+
+---
+
+## feapp.notify
+
+Available to the stateful worker only. Sends a notification to the user. The runner delivers the notification through the cloud library's routing layer — to the browser service worker, the desktop native shell, or any other registered target for this profile.
+
+```javascript
+await feapp.notify(title, options?)
+```
+
+`title` — required string. The notification title.
+
+`options` — optional object. Accepts the same fields as the second argument to [`ServiceWorkerRegistration.showNotification()`](https://developer.mozilla.org/en-US/docs/Web/API/ServiceWorkerRegistration/showNotification): `body`, `icon`, `badge`, `image`, `tag`, `data`, `requireInteraction`, `silent`, `actions`, and others. Unknown fields are ignored by the runner.
+
+```javascript
+// Simple notification
+await feapp.notify('Sync complete', { body: '12 new articles' })
+
+// With actions
+await feapp.notify('New message from Alice', {
+  body: 'Hey, are we still on for tomorrow?',
+  tag: 'message-thread-alice',
+  requireInteraction: true
+})
+```
+
+**If the `notifications` permission was not granted:** `feapp.notify()` is a silent no-op. It resolves without throwing. The developer does not need to guard every call.
+
+**If the `notifications` permission was granted:** The runner passes the notification to the cloud library routing layer. Delivery is best-effort — the runner does not throw if the notification cannot be delivered due to a transient routing failure.
+
+**Routing:** The cloud library delivers the notification to all registered targets for this app and profile. See ecosystem spec ARCHITECTURE.md § Notifications for the routing model.
+
+### Checking notification permission
+
+```javascript
+if (feapp.permissions.query('notifications') === 'granted') {
+  await feapp.notify('Background sync complete', { body: '5 new items' })
+}
+// or just call it — it is a no-op if not granted
+await feapp.notify('Background sync complete', { body: '5 new items' })
+```
+
+`feapp.permissions.query('notifications')` returns `'granted'` or `'denied'`.
+The `notifications` permission string has no value component — it is queried by type alone.

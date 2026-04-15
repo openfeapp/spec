@@ -50,7 +50,7 @@ A runner is a process that takes a `.feapp` file and profile context and execute
 MANIFEST.md             what fields you must parse and validate
 API.md                  what feapp.* behavior you must provide
 RUNNER_CONFORMANCE.md   the complete checklist of runner requirements
-WIRE.md                 the wire contracts your runner must implement (B1, B3, B4)
+WIRE.md                 the wire contracts your runner must implement (B3, B4)
 ```
 
 ---

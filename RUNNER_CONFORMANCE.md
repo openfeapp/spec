@@ -67,6 +67,10 @@ Worker network:           merge granted worker_network and network_configured va
                           same enforcement for both stateful and stateless workers
                           includes WebSocket outgoing connections
 Storage paths:            block feapp.storage access outside declared storage.paths
+Notifications:            if notifications is absent from granted set:
+                          feapp.notify() must be a silent no-op — resolve, do not throw
+                          if notifications is present:
+                          forward feapp.notify() calls to the cloud library routing layer
 ```
 
 ---
@@ -260,9 +264,15 @@ A runner that cannot enforce profile isolation must refuse to run multiple profi
 
 ## Profile context
 
-The runner receives profile context before launching any component. The profile context contains the resolved remoteStorage endpoint, bearer token, storage namespace, worker endpoints, and profile identity. The mechanism by which the runner receives this context is implementation-defined.
+The runner receives profile context before launching any component. The profile context
+contains the storage namespace, worker endpoints, profile identity, and any internal
+credentials the cloud library passes to its own runner for storage access. The mechanism
+by which the runner receives this context is implementation-defined and internal to the
+cloud library — it is not a public contract.
 
-The runner uses profile context to configure storage namespacing, inject worker endpoint URLs and auth into the frontend runtime, and configure worker process credentials. The worker never sees raw profile context. The runner applies it transparently.
+The runner uses profile context to configure storage namespacing, inject worker endpoint
+URLs into the frontend runtime, and configure worker process credentials. The worker
+never sees raw profile context. The runner applies it transparently.
 
 The runner must not persist profile context beyond the current session.
 

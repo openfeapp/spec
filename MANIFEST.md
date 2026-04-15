@@ -62,7 +62,8 @@ A JSON file named `feapp.json` at the root of the `.feapp` archive.
   },
   "workers": {
     "permissions": {
-      "network": ["https://api.example.com"]
+      "network": ["https://api.example.com"],
+      "notifications": true
     },
     "stateful": {
       "entry": "workers/stateful.js",
@@ -276,11 +277,14 @@ Worker permissions are declared once and shared by both the stateful and statele
 
 ```json
 "permissions": {
-  "network": ["https://feeds.example.com", "http://localhost:11434"]
+  "network": ["https://feeds.example.com", "http://localhost:11434"],
+  "notifications": true
 }
 ```
 
 `network` — network addresses both workers may contact. Value is either an array of addresses or `"*"` (unrestricted). Empty array means no external network access. `network_configured` endpoints are merged into this set at enforcement time. See [Network addresses](#network-addresses) for the address syntax.
+
+`notifications` — optional boolean. Declares that the stateful worker will call `feapp.notify()`. If absent or `false`, `feapp.notify()` is always a no-op regardless of user decision. If `true`, the library presents a notifications permission to the user at first run — the user may grant or deny it. Only the stateful worker can call `feapp.notify()`. Declaring `notifications: true` has no effect on the stateless worker or frontend.
 
 `storage` access is implicit, not declared. All actors always have read-write access to `feapp.storage`. This is structural — not a permission the user grants or the manifest declares.
 
@@ -569,9 +573,13 @@ At launch, the library passes the complete granted set to the runner as part of 
       "llm": ["http://localhost:11434"],
       "feeds": ["https://blog.example.com", "**.wordpress.com"],
       "filesystem": ["ws://localhost:9876"]
-    }
+    },
+    "notifications": true
   }
 }
+```
+
+`notifications` — `true` if the user granted the notifications permission, absent if denied or not declared.
 ```
 
 Any `_network` field may be `"*"` instead of an array, meaning unrestricted.
@@ -591,6 +599,7 @@ Wildcard depth rule: at least two domain segments after *. or **.
 Wildcards only before domain hosts, not IP addresses
 network_configured names are a-z0-9, unique
 network_configured count is integer >= 1 if present
+notifications, if present, must be boolean true — any other value is an error
 ```
 
 ---
@@ -603,5 +612,6 @@ Before any part of a `.feapp` runs, the library presents the user with a summary
 - Network addresses the workers may contact
 - Configured network endpoints (user provides values)
 - Storage paths the app uses
+- Notification permission (if declared)
 
 The user approves or rejects each permission individually. The library stores the decisions. The runner enforces the granted set.
